@@ -1,0 +1,1599 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><title>AI Governance Benchmark (Copy)</title>
+<script>(() => {
+  // artifact.json
+  var key = "legal-ai-governance-health-check";
+  var monitoring = {
+    alertChannel: "appifacts-alerts",
+    coreActions: []
+  };
+
+  // ../../packages/appifact-health/src/vocabulary.ts
+  var CORE_ACTIONS = [
+    "save",
+    "open",
+    "render",
+    "edit",
+    "sync",
+    "export",
+    "import",
+    "present",
+    "navigate",
+    "search",
+    "submit",
+    "upload",
+    "download",
+    "generate",
+    "connect",
+    "insert",
+    "delete",
+    "reorder"
+  ];
+  var OUTCOMES = ["success", "failure", "aborted"];
+  var ERROR_TYPE_RE = /^[a-z][a-z0-9_]{0,31}$/;
+  var ERROR_TYPES = [
+    "conflict",
+    "read_only",
+    "too_large",
+    "invalid_content",
+    "backpressure",
+    "transient",
+    "network",
+    "timeout",
+    "first_result_timeout",
+    "validation",
+    "capability_denied",
+    "capability_error",
+    "render",
+    "internal",
+    "user_error",
+    "helper_timeout",
+    "helper_error",
+    "helper_start_timeout",
+    "helper_init_timeout",
+    "dom_encoding_error",
+    "dom_operation_error",
+    "dom_not_supported_error",
+    "dom_invalid_state_error",
+    "dom_quota_exceeded_error",
+    "dom_security_error",
+    "unknown"
+  ];
+  var KNOWN_ERROR_TYPES = new Set([
+    "boot_4xx",
+    "boot_5xx",
+    "iframe_timeout",
+    "iframe_error",
+    "kernel_missing",
+    "csp_violation",
+    "cap_load_error",
+    "timeout",
+    "threw_before_ready",
+    "uncaught_error",
+    "unhandled_rejection",
+    "chunk_load",
+    "unsupported_browser",
+    ...ERROR_TYPES,
+    "malformed"
+  ]);
+  var SHELL_RESERVED_ERROR_TYPE = "malformed";
+  var RESERVED_VALUES = new Set([
+    "invalid",
+    "none",
+    "overflow"
+  ]);
+  var APP_KEY_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
+  var CHANNEL_RE = /^[a-z0-9][a-z0-9_-]{0,79}$/;
+  var READY_TIMEOUT_S = { min: 5, max: 120, default: 20 };
+  var WINDOW_MS = 15000;
+  var MAX_REPORTS_PER_ACTION_PER_WINDOW = 1000;
+  var SENTINEL = "appifact-health:v2";
+  var HEALTH_GLOBAL = "__appifact_health";
+
+  // ../../packages/appifact-health/src/health.ts
+  var UNSUPPORTED_FALLBACK_MS = 8000;
+  function awaitsUnsupportedVerdict(page, fileHref) {
+    try {
+      if (!page.watched)
+        return false;
+      const ver = /^\/_f\/([^/]{1,128})\//.exec(page.pathname)?.[1];
+      if (ver === undefined)
+        return false;
+      const url = new URL(fileHref);
+      return url.origin === page.origin && url.pathname.startsWith(`/_f/${ver}/`);
+    } catch {
+      return false;
+    }
+  }
+  function failedLinkIsCrash(link, origin) {
+    if (/(^|\s)(stylesheet|modulepreload)(\s|$)/i.test(link.rel))
+      return true;
+    if (!/(^|\s)preload(\s|$)/i.test(link.rel) || link.as !== "font")
+      return false;
+    try {
+      return new URL(link.href).origin === origin;
+    } catch {
+      return false;
+    }
+  }
+  function createVerdictGate(crash, env, fallbackMs = UNSUPPORTED_FALLBACK_MS) {
+    let decided = null;
+    let pending = false;
+    let timer = null;
+    let stopWatching = () => {};
+    const decide = (type) => {
+      if (decided === type || decided === "unsupported_browser")
+        return;
+      decided = type;
+      pending = false;
+      try {
+        if (timer !== null)
+          env.clearTimeout(timer);
+        if (type === "unsupported_browser")
+          stopWatching();
+      } catch {}
+      timer = null;
+      crash(type);
+    };
+    const settle = () => {
+      if (pending)
+        decide(env.marked() ? "unsupported_browser" : "chunk_load");
+    };
+    try {
+      env.onHide(settle);
+    } catch {}
+    return {
+      fail(awaitsVerdict) {
+        if (!awaitsVerdict) {
+          crash("chunk_load");
+          return;
+        }
+        if (decided !== null) {
+          crash(decided);
+          return;
+        }
+        if (pending)
+          return;
+        if (env.marked()) {
+          decide("unsupported_browser");
+          return;
+        }
+        pending = true;
+        try {
+          stopWatching = env.onMark(() => {
+            if (env.marked())
+              decide("unsupported_browser");
+          });
+        } catch {}
+        timer = env.setTimeout(settle, fallbackMs);
+      }
+    };
+  }
+  var MAX_WARNINGS = 10;
+  var READY_RESUME_FLOOR_MS = 1000;
+  var APPIFACT_ERROR_TYPES = new Map([
+    ["conflict", "conflict"],
+    ["read-only", "read_only"],
+    ["too-large", "too_large"],
+    ["invalid-content", "invalid_content"],
+    ["backpressure", "backpressure"],
+    ["transient", "transient"]
+  ]);
+  function errorTypeOf(error) {
+    if (typeof error === "object" && error !== null && "code" in error) {
+      const code = error.code;
+      if (typeof code === "string") {
+        const mapped = APPIFACT_ERROR_TYPES.get(code);
+        if (mapped !== undefined)
+          return mapped;
+      }
+    }
+    return "unknown";
+  }
+  var CHUNK_LOAD_MESSAGE = /dynamically imported module|Importing a module script failed|error loading dynamically imported module|Loading (CSS )?chunk|ChunkLoadError|Unable to preload/i;
+  var BENIGN_WINDOW_ERROR = /^ResizeObserver loop (?:limit exceeded|completed with undelivered notifications)/;
+  function isBenignWindowError(message) {
+    return typeof message === "string" && BENIGN_WINDOW_ERROR.test(message);
+  }
+  function looksLikeChunkLoad(reason) {
+    if (typeof reason !== "object" || reason === null)
+      return false;
+    const r = reason;
+    return r.name === "ChunkLoadError" || typeof r.message === "string" && CHUNK_LOAD_MESSAGE.test(r.message);
+  }
+  function isCoreAction(value) {
+    return typeof value === "string" && CORE_ACTIONS.includes(value);
+  }
+  function isOutcome(value) {
+    return typeof value === "string" && OUTCOMES.includes(value);
+  }
+  function manifestProblem(manifest) {
+    if (typeof manifest !== "object" || manifest === null) {
+      return "init() takes the parsed artifact.json (an object with key and monitoring)";
+    }
+    const m = manifest;
+    if (typeof m.key !== "string" || !APP_KEY_RE.test(m.key) || RESERVED_VALUES.has(m.key)) {
+      return "artifact.json key is not a reportable app key";
+    }
+    const mon = m.monitoring;
+    if (typeof mon !== "object" || mon === null) {
+      return "artifact.json has no monitoring block";
+    }
+    if (typeof mon.alertChannel !== "string" || !CHANNEL_RE.test(mon.alertChannel) || RESERVED_VALUES.has(mon.alertChannel)) {
+      return 'monitoring.alertChannel is not a Slack channel name (no "#")';
+    }
+    if (!Array.isArray(mon.coreActions) || !mon.coreActions.every(isCoreAction)) {
+      return "monitoring.coreActions must list verbs from CORE_ACTIONS";
+    }
+    if (mon.readyTimeoutS !== undefined && !(Number.isInteger(mon.readyTimeoutS) && mon.readyTimeoutS >= READY_TIMEOUT_S.min && mon.readyTimeoutS <= READY_TIMEOUT_S.max)) {
+      return `monitoring.readyTimeoutS must be a whole number from ${READY_TIMEOUT_S.min} to ${READY_TIMEOUT_S.max}`;
+    }
+    return null;
+  }
+  function inertHealth() {
+    return {
+      version: SENTINEL,
+      ready() {},
+      report() {},
+      crash() {},
+      replay() {},
+      track: runTracked(() => {})
+    };
+  }
+  function runTracked(report) {
+    return async (action, operation, classify = errorTypeOf) => {
+      let result;
+      try {
+        result = await operation();
+      } catch (error) {
+        let errorType = "unknown";
+        try {
+          errorType = classify(error);
+        } catch {}
+        report(action, "failure", errorType);
+        throw error;
+      }
+      report(action, "success");
+      return result;
+    };
+  }
+  function createHealth(manifest, env) {
+    const appKey = manifest.key;
+    const alertChannel = manifest.monitoring.alertChannel;
+    const declared = new Set(manifest.monitoring.coreActions);
+    const readyTimeoutMs = (manifest.monitoring.readyTimeoutS ?? READY_TIMEOUT_S.default) * 1000;
+    let warnings = 0;
+    const warned = new Set;
+    const warnOnce = (key, message) => {
+      if (warnings >= MAX_WARNINGS || warned.has(key))
+        return;
+      warned.add(key);
+      warnings += 1;
+      try {
+        env.warn(message);
+      } catch {}
+    };
+    let windowCounts = new Map;
+    let windowTimer = null;
+    const send = (action, outcome, errorType, replayed) => {
+      try {
+        if (action !== "load" && action !== "ready" && action !== "crash") {
+          const count = windowCounts.get(action) ?? 0;
+          if (count >= MAX_REPORTS_PER_ACTION_PER_WINDOW) {
+            warnOnce(`flood:${action}`, `"${action}" was reported more than ${MAX_REPORTS_PER_ACTION_PER_WINDOW} times in ${WINDOW_MS / 1000} s; the rest of this window's "${action}" reports are dropped — report once per user-level operation, not per element or frame`);
+            return;
+          }
+          windowCounts.set(action, count + 1);
+          if (windowTimer === null) {
+            windowTimer = env.setTimeout(() => {
+              windowTimer = null;
+              windowCounts = new Map;
+            }, WINDOW_MS);
+          }
+        }
+        env.post({
+          __frame_health: true,
+          report: {
+            appKey,
+            alertChannel,
+            action,
+            outcome,
+            ...errorType !== undefined && { errorType },
+            ...replayed && { replayed }
+          }
+        });
+      } catch {}
+    };
+    let readyOutcome = null;
+    const crashes = new Set;
+    let readyTimer = null;
+    let readyLeftMs = readyTimeoutMs;
+    let readyArmedAt = 0;
+    const settleReady = (outcome, errorType) => {
+      readyOutcome = { outcome, ...errorType !== undefined && { errorType } };
+      send("ready", outcome, errorType);
+    };
+    const onReadyTimeout = () => {
+      readyTimer = null;
+      if (readyOutcome !== null)
+        return;
+      settleReady("failure", crashes.size > 0 ? "threw_before_ready" : "timeout");
+    };
+    const armReadyTimer = () => {
+      if (readyOutcome !== null || readyTimer !== null)
+        return;
+      readyArmedAt = env.now();
+      readyTimer = env.setTimeout(onReadyTimeout, readyLeftMs);
+    };
+    const pauseReadyTimer = () => {
+      if (readyTimer === null)
+        return;
+      env.clearTimeout(readyTimer);
+      readyTimer = null;
+      readyLeftMs = Math.max(READY_RESUME_FLOOR_MS, readyLeftMs - (env.now() - readyArmedAt));
+    };
+    try {
+      env.onVisibilityChange(() => {
+        try {
+          if (env.visible())
+            armReadyTimer();
+          else
+            pauseReadyTimer();
+        } catch {}
+      });
+      if (env.visible())
+        armReadyTimer();
+    } catch {
+      try {
+        armReadyTimer();
+      } catch {}
+    }
+    const report = (action, outcome, errorType) => {
+      if (!isCoreAction(action)) {
+        warnOnce(`action:${String(action).slice(0, 32)}`, `report() dropped: "${String(action).slice(0, 32)}" is not one of the generic verbs (${CORE_ACTIONS.join(", ")})`);
+        return;
+      }
+      if (!declared.has(action)) {
+        warnOnce(`undeclared:${action}`, `report() dropped: "${action}" is not declared in artifact.json monitoring.coreActions for "${appKey}" — add it there so the schema, this module and the monitors agree`);
+        return;
+      }
+      if (!isOutcome(outcome)) {
+        warnOnce(`outcome:${action}`, `report("${action}", …) dropped: outcome must be one of ${OUTCOMES.join(", ")}`);
+        return;
+      }
+      if (outcome !== "failure") {
+        send(action, outcome);
+        return;
+      }
+      let type = errorType ?? "unknown";
+      if (typeof type !== "string" || !ERROR_TYPE_RE.test(type) || RESERVED_VALUES.has(type)) {
+        warnOnce(`errorType:${action}`, `report("${action}", "failure", …): errorType must be a short snake_case token from ERROR_TYPES (never an error message); sent as "unknown"`);
+        type = "unknown";
+      } else if (type === SHELL_RESERVED_ERROR_TYPE) {
+        warnOnce(`errorType!:${action}`, `report("${action}", "failure", "${type}"): "${type}" is the viewer shell's own label for an unusable error type, not one an app reports; sent as "unknown"`);
+        type = "unknown";
+      } else if (!KNOWN_ERROR_TYPES.has(type)) {
+        warnOnce(`errorType?:${type}`, `report("${action}", "failure", "${type}"): "${type}" is not an error type Frame's page-health route knows (choose from ERROR_TYPES: ${ERROR_TYPES.join(", ")}); it is sent and counts as a failure, but Frame files it under "invalid" until its list gains it`);
+      }
+      send(action, "failure", type);
+    };
+    send("load", "success");
+    return {
+      version: SENTINEL,
+      ready() {
+        if (readyOutcome !== null)
+          return;
+        if (readyTimer !== null) {
+          try {
+            env.clearTimeout(readyTimer);
+          } catch {}
+          readyTimer = null;
+        }
+        settleReady("success");
+      },
+      report,
+      track: runTracked(report),
+      crash(errorType) {
+        if (crashes.has(errorType))
+          return;
+        crashes.add(errorType);
+        send("crash", "failure", errorType);
+        if (errorType === "unsupported_browser" && readyOutcome === null) {
+          if (readyTimer !== null) {
+            try {
+              env.clearTimeout(readyTimer);
+            } catch {}
+            readyTimer = null;
+          }
+          settleReady("failure", "unsupported_browser");
+        }
+      },
+      replay() {
+        send("load", "success", undefined, true);
+        for (const type of crashes)
+          send("crash", "failure", type, true);
+        if (readyOutcome !== null) {
+          send("ready", readyOutcome.outcome, readyOutcome.errorType, true);
+        }
+      }
+    };
+  }
+
+  // ../../packages/appifact-health/src/index.ts
+  var installed = null;
+  var installedKey = null;
+  var warnedSecondInit = false;
+  function init(manifest) {
+    const handle = install(manifest);
+    try {
+      globalThis[HEALTH_GLOBAL] = handle;
+    } catch {}
+    return handle;
+  }
+  function install(manifest) {
+    if (installed !== null) {
+      if (installedKey !== manifest?.key && !warnedSecondInit) {
+        warnedSecondInit = true;
+        warn(`init() was already called for "${installedKey}"; the call for "${String(manifest?.key).slice(0, 32)}" returns that first handle`);
+      }
+      return installed;
+    }
+    const problem = manifestProblem(manifest);
+    if (problem !== null) {
+      warn(`not reporting — ${problem}`);
+      installed = inertHealth();
+      installedKey = typeof manifest?.key === "string" ? manifest.key : null;
+      return installed;
+    }
+    installedKey = manifest.key;
+    if (!inReportingContext()) {
+      installed = inertHealth();
+      return installed;
+    }
+    const engine = createHealth(manifest, {
+      post,
+      setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+      clearTimeout: (handle) => window.clearTimeout(handle),
+      now: () => performance.now(),
+      visible: () => document.visibilityState !== "hidden",
+      onVisibilityChange: (listener) => document.addEventListener("visibilitychange", listener),
+      warn
+    });
+    wireCrashes((type) => engine.crash(type));
+    wirePoke(() => engine.replay());
+    installed = engine;
+    return installed;
+  }
+  function inReportingContext() {
+    try {
+      return typeof window !== "undefined" && typeof location !== "undefined" && window.parent !== window && location.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+  function post(message) {
+    window.parent.postMessage(message, "*");
+  }
+  function wirePoke(replay) {
+    try {
+      window.addEventListener("message", (event) => {
+        try {
+          if (event.source !== window.parent)
+            return;
+          const data = event.data;
+          if (typeof data === "object" && data !== null && data.__frame_health_poke === true) {
+            replay();
+          }
+        } catch {}
+      });
+    } catch {}
+  }
+  function warn(message) {
+    try {
+      if (typeof console !== "undefined")
+        console.warn(`[${SENTINEL}] ${message}`);
+    } catch {}
+  }
+  var WATCH_ATTR = "data-frame-refused-watch";
+  var UNSUPPORTED_ATTR = "data-frame-unsupported";
+  function wireCrashes(crash) {
+    try {
+      const html = document.documentElement;
+      const gate = createVerdictGate(crash, {
+        setTimeout: (callback, ms) => window.setTimeout(callback, ms),
+        clearTimeout: (handle) => window.clearTimeout(handle),
+        marked: () => html.hasAttribute(UNSUPPORTED_ATTR),
+        onMark: (listener) => {
+          const observer = new MutationObserver(listener);
+          observer.observe(html, { attributes: true, attributeFilter: [UNSUPPORTED_ATTR] });
+          return () => observer.disconnect();
+        },
+        onHide: (listener) => window.addEventListener("pagehide", listener)
+      });
+      const page = () => ({
+        watched: html.hasAttribute(WATCH_ATTR),
+        origin: location.origin,
+        pathname: location.pathname
+      });
+      window.addEventListener("error", (event) => {
+        try {
+          if (event instanceof ErrorEvent) {
+            if (isBenignWindowError(event.message))
+              return;
+            crash(looksLikeChunkLoad(event.error) ? "chunk_load" : "uncaught_error");
+            return;
+          }
+          const target = event.target;
+          if (target instanceof HTMLScriptElement || target instanceof HTMLLinkElement && failedLinkIsCrash(target, location.origin)) {
+            const href = target instanceof HTMLScriptElement ? target.src : target.href;
+            gate.fail(awaitsUnsupportedVerdict(page(), href));
+          }
+        } catch {}
+      }, true);
+      window.addEventListener("unhandledrejection", (event) => {
+        try {
+          crash(looksLikeChunkLoad(event.reason) ? "chunk_load" : "unhandled_rejection");
+        } catch {}
+      });
+    } catch {}
+  }
+
+  // ../../packages/appifact-type-entry/ready.ts
+  function onRuntimeMounted(cb, doc = document, id = "root") {
+    const mounted = (root) => Array.from(root.children).some((c) => !c.hasAttribute("data-placeholder"));
+    const watch = () => {
+      const root = doc.getElementById(id);
+      if (root === null)
+        return;
+      if (mounted(root))
+        return cb();
+      const mo = new MutationObserver(() => {
+        if (!mounted(root))
+          return;
+        mo.disconnect();
+        cb();
+      });
+      mo.observe(root, { childList: true });
+    };
+    if (doc.readyState === "loading")
+      doc.addEventListener("DOMContentLoaded", watch);
+    else
+      watch();
+  }
+
+  // src/health.ts
+  var health = init({ key, monitoring });
+  onRuntimeMounted(() => health.ready(), document);
+})();</script>
+
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* The page's look: the Licensing Deal Benchmark's Goodwin design, as Goodwin asked (colours and type measured from goodwinlaw.com),
+   with the Claude for Legal templates' design rules for the rest. Orange on white is 2.3 to 1, so orange is a fill, a rule or a mark,
+   and text on it is the ink. */
+:root {
+  color-scheme: light;
+  --sans: "Avenir Next", Avenir, "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --headline: "Avenir Next", Avenir, "Century Gothic", "URW Gothic", "Segoe UI", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --ground: #eaebed; --surface: #ffffff; --sunk: #f6f7f8; --ink: #2f3539; --ink-2: #4f565a; --ink-3: #767d81;
+  --rule: #c4c4c4; --line: #d9dcdf; --outline: #93cce7; --control-edge: #4f8aa6; --tint: #dff0f8;
+  --accent: #e9993e; --accent-deep: #dc8a2c; --accent-soft: #fbe9d2; --on-accent: #2f3539; --flag-ink: #9a4d0b;
+  --st-na: #e9993e; --st-na-ink: #2f3539;
+  --st-pa: #f8d8ad; --st-pa-ink: #2f3539;
+  --st-ad: #d3e9cb; --st-ad-ink: #2f3539;
+  --st-ne: #e1e3e5; --st-ne-ink: #2f3539;
+  --mark: color-mix(in srgb, #fab219 45%, transparent);
+  --scrim: rgb(47 53 57 / 0.45); --shadow: 0 2px 10px rgba(47, 53, 57, 0.14); --shadow-lg: -8px 0 24px rgba(47, 53, 57, 0.14);
+  --corner: 0 0 18px 0; --focus: 0 0 0 2px #ffffff, 0 0 0 4px #2f3539;
+  --hex: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='168' height='97' viewBox='0 0 168 97'%3E%3Cg fill='none' stroke-width='1.5'%3E%3Cpath d='M28 0l28 16v33L28 65 0 49V16z M112 0l28 16v33l-28 16-28-16V16z M70 49l28 16v32 M70 49L42 65v32 M154 49l28 16 M154 49l-28 16v32 M-14 49l28 16v32' stroke='%23ffffff' stroke-opacity='.55'/%3E%3Cpath d='M56 16L28 32 0 16 M140 16l-28 16-28-16 M28 32v33 M112 32v33' stroke='%23000000' stroke-opacity='.035'/%3E%3C/g%3E%3C/svg%3E");
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --ground: #1c2124; --surface: #252b2f; --sunk: #2c3338; --ink: #eef0f1; --ink-2: #c3c8cb; --ink-3: #939a9e;
+  --rule: rgba(238, 240, 241, 0.26); --line: rgba(238, 240, 241, 0.14); --outline: #4f8aa6; --control-edge: #6aa3bf; --tint: #1f3a47;
+  --accent-soft: #4a3519; --on-accent: #1c2124; --flag-ink: #f0a860;
+  --st-na: #e9993e; --st-na-ink: #1c2124; --st-pa: #5b4121; --st-pa-ink: #f6e7d4; --st-ad: #29432c; --st-ad-ink: #e2f1dd; --st-ne: #3a4247; --st-ne-ink: #eef0f1;
+  --scrim: rgb(0 0 0 / 0.55); --shadow: 0 0 0 1px rgba(238, 240, 241, 0.14); --shadow-lg: 0 0 0 1px rgba(238, 240, 241, 0.2);
+  --focus: 0 0 0 2px #1c2124, 0 0 0 4px #eef0f1; --hex: none;
+} }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ground: #1c2124; --surface: #252b2f; --sunk: #2c3338; --ink: #eef0f1; --ink-2: #c3c8cb; --ink-3: #939a9e;
+  --rule: rgba(238, 240, 241, 0.26); --line: rgba(238, 240, 241, 0.14); --outline: #4f8aa6; --control-edge: #6aa3bf; --tint: #1f3a47;
+  --accent-soft: #4a3519; --on-accent: #1c2124; --flag-ink: #f0a860;
+  --st-na: #e9993e; --st-na-ink: #1c2124; --st-pa: #5b4121; --st-pa-ink: #f6e7d4; --st-ad: #29432c; --st-ad-ink: #e2f1dd; --st-ne: #3a4247; --st-ne-ink: #eef0f1;
+  --scrim: rgb(0 0 0 / 0.55); --shadow: 0 0 0 1px rgba(238, 240, 241, 0.14); --shadow-lg: 0 0 0 1px rgba(238, 240, 241, 0.2);
+  --focus: 0 0 0 2px #1c2124, 0 0 0 4px #eef0f1; --hex: none;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+html { scrollbar-gutter: stable; }
+body { background-color: var(--ground); background-image: var(--hex); background-attachment: fixed; color: var(--ink); font: 400 15px/1.5 var(--sans); -webkit-font-smoothing: antialiased; padding-bottom: env(safe-area-inset-bottom, 0px); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: none; box-shadow: var(--focus); }
+[hidden] { display: none !important; }
+[tabindex="-1"]:focus { outline: none; box-shadow: none; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* ── the six type styles, in the firm's sans; titles are light, as the firm's headlines are ── */
+.t-title { font: 300 28px/1.25 var(--headline); margin: 0; letter-spacing: -0.005em; }
+.t-lead { font: 400 17px/1.45 var(--sans); margin: 0; }
+.t-body { font: 400 15px/1.5 var(--sans); margin: 0; }
+.t-strong { font: 600 15px/1.4 var(--sans); margin: 0; }
+.t-label { font: 400 15px/1.5 var(--sans); color: var(--ink-2); margin: 0; }
+.t-caption { font: 400 13px/1.45 var(--sans); color: var(--ink-2); margin: 0; }
+/* the firm's letter-spaced capitals: labels, tabs and quiet actions (a control style, as the firm's header links are) */
+.caps { font: 500 12px/16px var(--sans); letter-spacing: 0.16em; text-transform: uppercase; }
+
+/* ── the app bar: white, a soft shadow under it; the name on the left, the sections and the firm's mark on the right ── */
+.appbar { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 24px; min-height: 68px; padding: 0 max(32px, env(safe-area-inset-right, 0px)) 0 max(32px, env(safe-area-inset-left, 0px)); background: var(--surface); box-shadow: var(--shadow); }
+.appbar__name { flex: 1 1 auto; min-width: 0; color: var(--ink-2); font: 400 15px/1.4 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tabs { display: flex; gap: 22px; align-items: stretch; align-self: stretch; }
+.tab { background: none; border: 0; padding: 0 0 2px; color: var(--ink); border-bottom: 2px solid transparent; box-shadow: inset 0 -1px 0 transparent; display: inline-flex; align-items: center; white-space: nowrap; }
+.tab:hover { border-bottom-color: var(--rule); }
+.tab[aria-current="page"] { border-bottom-color: var(--accent); }
+.firm { display: flex; align-items: center; gap: 0; padding-right: 18px; margin-right: 2px; border-right: 1px solid var(--rule); height: 34px; flex: none; }
+.firm__name { font: 700 16px/24px var(--sans); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); white-space: nowrap; }
+/* a copy's attribution line is Goodwin's wording, so it wraps rather than being cut short */
+#attribution { white-space: normal; overflow: visible; padding: 6px 0; }
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 max(32px, env(safe-area-inset-right, 0px)) 48px max(32px, env(safe-area-inset-left, 0px)); }
+.view { display: flex; flex-direction: column; gap: 28px; padding-top: 28px; }
+
+/* ── landing: the headline with the short orange rule under it, then the ways in ── */
+.hero { display: flex; flex-direction: column; gap: 0; }
+.hero__headline { font: 300 38px/46px var(--headline); letter-spacing: -0.01em; margin: 0; max-width: 26ch; }
+.hero__headline::after, .rule::after { content: ""; display: block; width: 32px; height: 4px; margin-top: 14px; background: var(--accent); }
+.hero__sub { margin-top: 14px; max-width: 52ch; }
+.hero__by { margin-top: 6px; }
+.entries { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 22px; }
+.entry { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 18px 20px; min-height: 112px; background: var(--surface); border: 1px solid var(--control-edge); border-radius: var(--corner); color: var(--ink); }
+.entry:hover { background: var(--sunk); }
+.entry__label { display: flex; align-items: center; gap: 8px; font: 600 15px/1.35 var(--sans); }
+.entry__label svg { flex: none; width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+.entry--main { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.entry--main:hover { background: var(--accent-deep); }
+.entry--main .t-caption { color: var(--on-accent); }
+
+/* the sample's label: one line, the "Sample data" tag and Goodwin's banner */
+.banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--outline); border-radius: var(--corner); }
+.tag { flex: none; display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; background: var(--tint); color: var(--ink); font: 600 12px/1 var(--sans); }
+
+/* ── a page head: the title with the short rule, and the actions about the whole page on the right ── */
+.phead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px 32px; flex-wrap: wrap; }
+.phead__main { min-width: 0; flex: 1 1 520px; }
+.phead__main .t-lead, .phead__main .t-caption { margin-top: 10px; max-width: 70ch; }
+.actions { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+.quiet { background: none; border: 0; padding: 4px 1px; color: var(--ink); box-shadow: inset 0 -1px 0 var(--rule); }
+.quiet:hover { box-shadow: inset 0 -1px 0 var(--ink); }
+
+/* ── the Map: each area a row, its tiles in a grid of four; each tile names its element, status and source ── */
+.areas { display: flex; flex-direction: column; gap: 20px; }
+.area { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.area__head { color: var(--ink); margin: 0; }
+.mapblock { display: flex; flex-direction: column; gap: 10px; }
+.area__cells { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tile { display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%; padding: 12px 14px 13px; border: 0; border-radius: var(--corner); min-height: 92px; color: var(--ink); }
+.tile:hover { filter: brightness(0.97); }
+.tile[data-status="not_addressed"] { background: var(--st-na); color: var(--st-na-ink); }
+.tile[data-status="partially_addressed"] { background: var(--st-pa); color: var(--st-pa-ink); }
+.tile[data-status="addressed"] { background: var(--st-ad); color: var(--st-ad-ink); }
+.tile[data-status="not_enough_information"] { background: var(--st-ne); color: var(--st-ne-ink); box-shadow: inset 0 0 0 1px var(--rule); }
+.tile__name { font: 600 15px/1.35 var(--sans); }
+.tile__status { font: 400 13px/1.4 var(--sans); }
+.tile__source { font: 400 13px/1.4 var(--sans); margin-top: auto; padding-top: 6px; }
+.tile[data-open="true"] { box-shadow: 0 0 0 2px var(--ink); }
+.divider { border: 0; border-top: 1px solid var(--rule); margin: 4px 0; }
+
+/* ── below the tiles: the lead, the priority cards, the role question, the questions and the ending ── */
+.section { display: flex; flex-direction: column; gap: 14px; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.card { display: flex; flex-direction: column; gap: 8px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--outline); border-top: 4px solid var(--accent); border-radius: var(--corner); }
+.card .t-caption { color: var(--ink-2); }
+
+.section__head { font-size: 17px; }
+.panel { padding: 20px 22px; background: var(--surface); border: 1px solid var(--outline); border-radius: var(--corner); display: flex; flex-direction: column; gap: 12px; }
+.roles { display: flex; flex-wrap: wrap; gap: 10px; }
+.choice { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 16px; border-radius: 999px; border: 1px solid var(--control-edge); background: var(--surface); text-align: left; }
+.choice:hover { background: var(--sunk); }
+.choice[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.choice svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.5; flex: none; }
+.qlist { margin: 0; padding: 0 0 0 22px; display: flex; flex-direction: column; gap: 8px; list-style: disc; }
+.qlist li { padding-left: 4px; }
+.ending { max-width: 80ch; }
+.download { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; }
+.contact { max-width: 760px; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; padding: 0 20px; border-radius: 999px; border: 0; text-decoration: none; white-space: nowrap; }
+.btn--primary { background: var(--accent); color: var(--on-accent); font: 600 12px/1 var(--sans); letter-spacing: 0.14em; text-transform: uppercase; }
+.btn--primary:hover { background: var(--accent-deep); }
+.btn--primary::after { content: "\2192"; font-size: 15px; letter-spacing: 0; line-height: 1; }
+.btn--line { background: var(--surface); color: var(--ink); box-shadow: inset 0 0 0 1px var(--control-edge); font: 600 14px/1 var(--sans); }
+.btn--line:hover { background: var(--sunk); }
+.btnrow { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.address { font: 400 15px/1.5 var(--sans); color: var(--ink); user-select: all; }
+.foot { border-top: 1px solid var(--rule); padding-top: 14px; }
+.foot p { max-width: 110ch; }
+.foot .important { margin-bottom: 10px; }
+.important strong { font-weight: 600; }
+.view > .important { max-width: 110ch; }
+.foot .legend { margin-top: 10px; }
+.legend strong { font-weight: 600; }
+.contact__step { display: flex; flex-direction: column; gap: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+.agree { display: flex; align-items: flex-start; gap: 10px; }
+.agree input { flex: none; width: 18px; height: 18px; margin: 3px 0 0; accent-color: var(--control-edge); cursor: pointer; }
+.agree label { cursor: pointer; }
+.agree input:focus-visible { outline: 2px solid var(--control-edge); outline-offset: 2px; box-shadow: none; }
+.note { color: var(--ink-2); }
+
+/* ── Goodwin's baseline: the four areas side by side ── */
+#baseline { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; align-items: start; }
+#baseline .area__head { padding: 0 2px 8px; border-bottom: 1px solid var(--rule); min-height: 42px; display: flex; align-items: flex-end; color: var(--ink); }
+.btiles { display: flex; flex-direction: column; gap: 8px; }
+.btile { padding: 14px 16px; background: var(--surface); border: 1px solid var(--outline); border-radius: var(--corner); display: flex; flex-direction: column; gap: 6px; }
+
+/* ── the Health Check: one question at a time ── */
+.check { max-width: 760px; display: flex; flex-direction: column; gap: 22px; padding-top: 20px; }
+.back { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; background: none; border: 0; padding: 2px 0; color: var(--ink); box-shadow: inset 0 -1px 0 var(--rule); }
+.back:hover { box-shadow: inset 0 -1px 0 var(--ink); }
+.back svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+.progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.progress > span { display: block; height: 100%; background: var(--accent); transition: width 200ms ease; }
+.opts { display: flex; flex-direction: column; gap: 10px; }
+.opt { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 12px 18px; text-align: left; background: var(--surface); border: 1px solid var(--control-edge); border-radius: var(--corner); font: 400 15px/1.4 var(--sans); color: var(--ink); }
+.opt:hover { background: var(--sunk); }
+.opt[aria-checked="true"] { background: var(--accent-soft); border-color: var(--flag-ink); box-shadow: inset 0 0 0 1px var(--flag-ink); color: var(--ink); }
+/* Back and Next stay in one place from question to question: room for three lines of question and six options */
+#check-title { min-height: 108px; }
+.check__body { min-height: 410px; display: flex; flex-direction: column; gap: 14px; }
+.check__progress { display: flex; flex-direction: column; gap: 8px; }
+.check__meta { display: flex; justify-content: space-between; gap: 12px; }
+/* Back and Next stay in view at the foot of the window on short screens, over the same patterned ground as the page */
+.check__nav { position: sticky; bottom: 0; z-index: 4; display: flex; justify-content: space-between; align-items: center; padding: 16px 0 calc(16px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--rule); background-color: var(--ground); background-image: var(--hex); background-attachment: fixed; }
+.check > .t-title { font-weight: 400; color: var(--ink); }
+.check .opt { scroll-margin-bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
+.btn--next { background: var(--accent); color: var(--on-accent); font: 600 14px/1 var(--sans); min-width: 96px; }
+.btn--next:hover { background: var(--accent-deep); }
+.btn--next:disabled { opacity: 0.45; cursor: default; background: var(--accent); }
+.opt svg { margin-left: auto; width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.5; flex: none; }
+
+/* ── the side sheet over the right edge: a tile's detail or the Health Check questions ── */
+body.has-sheet { overflow: hidden; }
+.scrim { position: fixed; inset: 0; z-index: 20; background: var(--scrim); }
+.sheet { position: fixed; z-index: 21; top: 0; right: 0; bottom: 0; width: min(500px, 100%); background: var(--surface); border-left: 1px solid var(--outline); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; }
+.sheet__bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px 10px 24px; border-bottom: 1px solid var(--line); }
+.sheet__nav { display: flex; gap: 4px; margin-left: auto; }
+.icon { width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 999px; background: none; color: var(--ink); }
+.icon:hover { background: var(--sunk); }
+.icon:disabled { color: var(--ink-3); opacity: 0.4; cursor: default; background: none; }
+.icon svg { width: 18px; height: 18px; stroke: currentColor; fill: none; stroke-width: 1.5; }
+.sheet__body { flex: 1 1 auto; overflow: auto; overscroll-behavior: contain; padding: 16px 24px 28px; display: flex; flex-direction: column; gap: 22px; }
+.field { display: flex; flex-direction: column; gap: 8px; }
+.field--rule { border-top: 1px solid var(--line); padding-top: 16px; }
+.sheet__head { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
+.pill { display: inline-flex; align-items: center; height: 26px; padding: 0 11px; border-radius: 999px; font: 600 13px/1 var(--sans); }
+.pill[data-status="not_addressed"] { background: var(--st-na); color: var(--st-na-ink); }
+.pill[data-status="partially_addressed"] { background: var(--st-pa); color: var(--st-pa-ink); }
+.pill[data-status="addressed"] { background: var(--st-ad); color: var(--st-ad-ink); }
+.pill[data-status="not_enough_information"] { background: var(--st-ne); color: var(--st-ne-ink); }
+
+.field > h3.t-caption { padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+.qrow { display: flex; flex-direction: column; gap: 2px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 16px; }
+
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 30; padding: 10px 16px; border-radius: 8px; background: var(--ink); color: var(--surface); font: 400 14px/1.4 var(--sans); }
+
+@media (max-width: 1080px) { .area__cells, #baseline { grid-template-columns: repeat(2, minmax(0, 1fr)); } .cards { grid-template-columns: 1fr; } }
+@media (max-width: 860px) { .hero, .ending { grid-template-columns: 1fr; } .hero__headline { font-size: 30px; line-height: 38px; } }
+@media (max-width: 960px) {
+  .appbar { flex-wrap: wrap; gap: 4px 12px; padding-top: 10px; }
+  .appbar__name { flex: 1 1 0; }
+  .tabs { order: 3; width: 100%; height: 40px; overflow-x: auto; scrollbar-width: none; }
+}
+@media (max-width: 640px) {
+  .area__cells, #baseline, .entries { grid-template-columns: 1fr; }
+  .appbar { padding: 10px 16px 0; }
+  .firm { padding-right: 12px; height: 28px; }
+  .tabs { gap: 10px; }
+  .tab { letter-spacing: 0.04em; font-size: 11px; }
+  .wrap { padding-left: 16px; padding-right: 16px; }
+}
+@media print { .appbar, .scrim, .sheet { display: none !important; } body { background: #fff; } }
+
+</style>
+<style id="firm-wordmark">
+/* The firm's mark and wordmark in the app bar. The image has a white ground, so the dark theme shows it on a small white
+   panel; "wordmark": "off" in config.json shows the name as type instead. */
+:root { --firm-wordmark: url(data:image/png;base64,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); }
+.firm__name { display: inline-block; width: 142px; height: 34px; background: var(--firm-wordmark) left center / contain no-repeat; font-size: 0; line-height: 0; color: transparent; overflow: hidden; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .firm__name { width: 150px; height: 38px; padding: 2px 4px; border-radius: 6px; background: #ffffff var(--firm-wordmark) center / 134px auto no-repeat; } }
+:root[data-theme="dark"] .firm__name { width: 150px; height: 38px; padding: 2px 4px; border-radius: 6px; background: #ffffff var(--firm-wordmark) center / 134px auto no-repeat; }
+@media (max-width: 640px) { .firm__name { width: 110px; height: 26px; } :root .firm__name { background-size: contain; } }
+</style>
+</head>
+<body>
+<div id="root"><p class="wrap" data-placeholder>Loading…</p></div>
+<script type="application/json" id="content">{"copy":{"productName":"Goodwin AI Governance Benchmark","outputName":"AI Governance Map","headline":"Benchmark your AI governance in minutes.","subhead":"Compare your current approach with the governance elements Goodwin looks for in a practical AI program.","byline":"Based on the Health Check conversations Goodwin’s AI practice runs with companies.","roleQuestion":{"prompt":"What is your role?","options":[{"id":"owner","label":"I own or advise on AI governance at my company"},{"id":"employee","label":"I work at the company but don’t own governance"},{"id":"explorer","label":"I’m exploring what good looks like"}]},"entryButtons":[{"id":"explore","label":"Explore Goodwin’s baseline","sub":"What should an AI governance program include?"},{"id":"check","label":"Take the five-minute Health Check","sub":"How does our current approach compare?"}],"statusLabels":{"addressed":"Addressed","partially_addressed":"Partially addressed","not_addressed":"Not addressed","not_enough_information":"Not enough information"},"sourceLabels":{"answer":"Your answer","document":"Your document","answer_with_document":"Your answer, supported by your document","document_with_answer":"Your document, confirmed by your answer","document_unconfirmed":"Your document. Whether it is followed was not confirmed.","none":"Not established from the information provided"},"dontKnowNote":"Choose “Don’t know” if you’re not sure.","map":{"title":"Your AI Governance Map","priorities_heading":"Three areas to look at first","priorities_heading_two":"Two areas to look at first","visibility_heading":"Start with visibility","questions_heading_owner":"Questions you might consider with your board or governance committee","questions_heading_employee":"Questions you might raise with Legal","questions_heading_explorer":"Questions a company might consider","priorities_lead":"Your Map shows where your current approach aligns with Goodwin’s baseline and the areas worth examining first.","questions_framing_note":"Examples to prompt discussion. Which matter most depends on your company’s facts.","priorities_heading_one":"One area to look at first","none":"None of your answers points to an area to look at first, so the next step is keeping your program current as your use of AI and the law change. Goodwin helps companies answer the questions their policies don’t cover, such as a new tool, use or data, and keep their governance documents up to date as AI law develops."},"endings":{"employee":"You answered what you could see from where you sit. These are the questions to take to Legal. Download the Map to share it.","explorer":"This is what a practical AI governance program addresses, and the questions a company should be able to answer."},"cta":{"downloadLabel":"Download your AI Governance Map","heading":"Want to discuss your results?","text":"Goodwin’s AI practice advises companies, boards and investors on AI governance. If you’d like to talk about your Map, contact the team.","buttonLabel":"Contact Goodwin’s AI Governance team","subject":"AI Governance Health Check (via Claude)","body":"I’d like to discuss an AI Governance Health Check with Goodwin.","pdfLine":"To discuss your results with Goodwin, use the contact step in the AI Governance Benchmark."},"disclaimer":"Prepared with Claude using Goodwin’s Health Check questions. This check does not confirm that your documents are scoped so that each AI use case meets the legal requirements that apply to it, or that tools that introduce legal risk have appropriate mitigations. Those questions need review by a lawyer.","importantNote":{"label":"Important Note:","tool":"AI Governance Benchmark (the “Tool”)","text":"Your use of the {tool} does not make you a client of Goodwin or create an attorney-client relationship. Goodwin lawyers do not review the results generated by the Tool, and those results do not constitute legal advice. The Tool’s results are generated automatically from your answers, and any responses from Claude may contain errors. Results may not be correct, complete, applicable to your specific scenario, or consistent with jurisdiction-specific requirements. Before uploading any confidential or privileged documents or other information, you should carefully consider any risk that doing so may result in the loss of confidentiality or any applicable protections."},"advertisingLegend":{"label":"Attorney Advertising.","text":"This tool may be considered advertising under the ethical rules of certain jurisdictions. Prior results do not guarantee a similar outcome."},"attribution":"Based on Goodwin’s AI Governance Benchmark.","sampleBanner":"Sample company. Harlow Diagnostics is invented. Replace it with your own answers or documents.","basedOn":"Based on"},"areas":["AI use and accountability","Policy, data and training","Tools, vendors and risk review","Board oversight and incident response"],"questions":[{"id":"Q01","name":"AI use today","area":"AI use and accountability","question":"Which best describes AI use at your company today?","options":[{"label":"Limited pockets","status":"partially_addressed"},{"label":"Broad but informal","status":"not_addressed"},{"label":"Broad with a formal program","status":"addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q02","name":"Inventory of tools and use cases","area":"AI use and accountability","question":"Does a current list exist of the AI tools and use cases in operation across the company?","options":[{"label":"Yes, maintained","status":"addressed"},{"label":"Partial or stale","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q03","name":"Adoption process","area":"AI use and accountability","question":"If a team wanted to adopt a new AI tool next week, is there a defined process they would have to go through?","options":[{"label":"Yes, and it’s followed","status":"addressed"},{"label":"Exists but often bypassed","status":"partially_addressed"},{"label":"Defined, not yet implemented","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q04","name":"Who approves a new use case","area":"AI use and accountability","question":"Who can approve a new AI use case today?","options":[{"label":"A named role or body","status":"addressed"},{"label":"Unclear, varies by team","status":"partially_addressed"},{"label":"No one designated","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q05","name":"Acceptable-use policy","area":"Policy, data and training","question":"Does the company have an AI acceptable-use policy that covers current generative AI tools and has been communicated to employees?","options":[{"label":"Yes, current and communicated","status":"addressed"},{"label":"Exists but needs updating or broader communication","status":"partially_addressed"},{"label":"Draft or awaiting launch","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q06","name":"Data-input rules","area":"Policy, data and training","question":"Are there clear rules on what information employees may and may not put into AI tools, including public chatbots?","options":[{"label":"Yes","status":"addressed"},{"label":"Partly","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q07","name":"Notetakers and transcripts","area":"Policy, data and training","question":"Are AI meeting notetakers or transcription tools in use in company meetings, and if so, do you know where the transcripts are stored, who can access them, and how long they’re kept?","options":[{"label":"Not used, no planned use","status":"partially_addressed"},{"label":"Not used internally, but rollout or third-party use needs guidance","status":"partially_addressed"},{"label":"In use, and yes","status":"addressed"},{"label":"In use, partially","status":"partially_addressed"},{"label":"In use, and no","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q08","name":"Training","area":"Policy, data and training","question":"Have employees received any training or guidance on using AI tools for work?","options":[{"label":"Yes, formal","status":"addressed"},{"label":"Informal or ad hoc","status":"partially_addressed"},{"label":"Planned, not yet delivered","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q09","name":"Vendor AI assessment","area":"Tools, vendors and risk review","question":"When the company buys software today, does anyone assess the vendor’s AI components and data practices?","options":[{"label":"Yes, routinely","status":"addressed"},{"label":"Sometimes","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q10","name":"Legal applicability","area":"Tools, vendors and risk review","question":"Has the company determined which AI-specific legal requirements currently apply to it (state automated-decision and employment rules, EU AI Act, sector guidance)?","options":[{"label":"Yes, documented","status":"addressed"},{"label":"Informally","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q11","name":"Board rules and oversight","area":"Board oversight and incident response","question":"Does the board have defined rules for directors’ own use of AI, and a clear process for overseeing the company’s AI program?","options":[{"label":"Both","status":"addressed"},{"label":"Director-use rules only","status":"partially_addressed"},{"label":"Oversight process only","status":"partially_addressed"},{"label":"Neither","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]},{"id":"Q12","name":"Incident handling","area":"Board oversight and incident response","question":"If an AI tool caused a problem tomorrow (a wrong output to a customer, a transcript in the wrong hands, a complaint), is it clear who handles it and how?","options":[{"label":"Yes","status":"addressed"},{"label":"Partly","status":"partially_addressed"},{"label":"No","status":"not_addressed"},{"label":"Don’t know","status":"not_enough_information"}]}],"baseline":{"label":"Goodwin’s practical governance baseline","framing":"A practical program scopes its documents so that each AI use case meets the legal requirements that apply to it, and tools that introduce legal risk carry appropriate mitigations. The twelve elements below are how Goodwin checks whether that is in place.","items":[{"id":"Q01","statement":"Someone at the company has a picture of actual AI use, not only sanctioned use, and there is a program around it.","why":"Nobody can govern what nobody has seen."},{"id":"Q02","statement":"A current list of AI tools and use cases exists and someone owns keeping it current.","why":"A list is one of the first things a regulator, insurer or acquirer may ask for, and the first thing a program is built on."},{"id":"Q03","statement":"A new AI tool or use case goes through a defined process, and teams actually use it.","why":"Without a defined path, new tools arrive through expense reports and personal accounts."},{"id":"Q04","statement":"A named role or body approves new AI use cases, and people know to go there.","why":"If no one is named, every team is its own approver."},{"id":"Q05","statement":"An acceptable-use policy covers current generative AI tools and employees have seen it.","why":"A policy written before generative AI does not cover the tools employees use today."},{"id":"Q06","statement":"Written rules say what information may and may not go into AI tools, including personal accounts and public chatbots.","why":"Confidential information typed into a public tool cannot be called back."},{"id":"Q07","statement":"If AI notetakers or transcription are in use, the company knows where transcripts are stored, who can access them and how long they are kept.","why":"Transcripts are records. Someone has to decide where they live, who can see them and how long they last."},{"id":"Q08","statement":"Employees have received formal training or guidance on using AI tools for work, with updates since rollout.","why":"A policy no one has been trained on is a document, not a practice."},{"id":"Q09","statement":"Vendor intake routinely asks about AI components and data practices before software is bought.","why":"Vendors add AI features between contract cycles. Intake is the only point where anyone asks."},{"id":"Q10","statement":"The company has determined and documented which AI-specific legal requirements apply to it.","why":"Whether AI-specific rules apply depends on what a company uses AI for and where it operates."},{"id":"Q11","statement":"The board has rules for directors’ own use of AI and a defined process for overseeing the company’s AI program.","why":"Boards are expected to oversee material risks, and directors use AI themselves with board materials."},{"id":"Q12","statement":"The incident plan names AI, and it is clear who leads if an AI tool causes a problem.","why":"The first AI incident tests whether anyone knows it is theirs to handle."}],"observations":[],"marketContext":[]},"priority":{"map":[{"question":"Q01","gap":"G11","triggers":["Broad but informal"],"line":"AI use is broad across the company but informal, without a program around it."},{"question":"Q02","gap":"G01","triggers":["No","Partial or stale"],"line":"There is no current list of the AI tools and use cases in operation across the company."},{"question":"Q03","gap":"G02","triggers":["No","Exists but often bypassed"],"line":"There is no followed process, or named approver, for bringing in a new AI tool or use case."},{"question":"Q04","gap":"G02","triggers":["No one designated","Unclear, varies by team"],"line":"There is no followed process, or named approver, for bringing in a new AI tool or use case."},{"question":"Q05","gap":"G03","triggers":["No","Exists but needs updating or broader communication","Draft or awaiting launch"],"line":"The AI acceptable-use policy is missing, or doesn’t cover current generative AI tools, or hasn’t reached the employees it governs."},{"question":"Q06","gap":"G04","triggers":["No","Partly"],"line":"Employees don’t have clear rules on what information may go into AI tools, including public chatbots."},{"question":"Q07","gap":"G05","triggers":["In use, and no","In use, partially","Not used internally, but rollout or third-party use needs guidance"],"line":"AI notetakers are in use without clear answers on where transcripts are stored, who can access them and how long they’re kept."},{"question":"Q08","gap":"G06","triggers":["No","Informal or ad hoc"],"line":"Employees haven’t had training or practical guidance on using AI tools for work."},{"question":"Q09","gap":"G07","triggers":["No","Sometimes"],"line":"No one routinely assesses a vendor’s AI components and data practices when the company buys software."},{"question":"Q10","gap":"G08","triggers":["No","Informally"],"line":"The company hasn’t determined and documented which AI-specific legal requirements apply to it."},{"question":"Q11","gap":"G09a","triggers":["Oversight process only"],"line":"The board has no defined rules for directors’ own use of AI with board materials."},{"question":"Q11","gap":"G09b","triggers":["Director-use rules only"],"line":"The board has no clear process for overseeing the company’s AI program."},{"question":"Q11","gap":"G09c","triggers":["Neither"],"line":"The board has neither rules for directors’ own AI use nor a process for overseeing the company’s AI program."},{"question":"Q12","gap":"G10","triggers":["No","Partly"],"line":"It isn’t clear who would handle an AI-related problem, or how."}],"visibility":{"gap":"G12","line":"Several core governance questions couldn’t be answered from where the legal team sits.","follow":"Start by confirming what is actually in use before anything else."},"order":["G03","G05","G04","G02","G07","G09c","G09a","G09b","G10","G01","G06","G08","G11"],"questions":{"G01":"Who keeps the list of AI tools we use, and when was it last updated?","G02":"Who decides whether a new AI tool can be used?","G03":"When was our AI policy last updated, and does it cover the tools we use now?","G04":"What information can go into AI tools, and where is that written down?","G05":"Are our meetings being transcribed, and who can see the transcripts?","G06":"What training or guidance have people had on AI tools, and is more planned?","G07":"When we buy software, does anyone ask whether it uses AI and what it does with our data?","G08":"Which AI-specific laws apply to the company, and has anyone confirmed it?","G10":"If an AI tool caused a problem tomorrow, who would handle it?","G11":"Who is responsible for AI at the company?","G12":"Who at the company could answer these questions?","G09a":"Do directors have rules for their own use of AI with board materials?","G09b":"How does the board oversee the company’s use of AI, and how often does it hear about it?","G09c":"Has the board been briefed on how we use AI, and do directors have rules for their own use?"},"titles":{"G01":{"No":"There is no list of the AI tools in use","Partial or stale":"The list of AI tools in use is partial or out of date"},"G02":{"No":"There is no process for bringing in a new AI tool","Exists but often bypassed":"The process for new AI tools exists but is often bypassed","No one designated":"No one is designated to approve new AI uses","Unclear, varies by team":"Who approves a new AI use varies by team"},"G03":{"No":"There is no AI acceptable-use policy","Exists but needs updating or broader communication":"Your acceptable-use policy needs updating or wider communication","Draft or awaiting launch":"Your acceptable-use policy is still in draft"},"G04":{"No":"There are no rules on what information may go into AI tools","Partly":"Rules on what may go into AI tools are only partly set"},"G05":{"In use, and no":"Transcription is on with no rules on where transcripts go","In use, partially":"Transcription is on without rules on where transcripts go","Not used internally, but rollout or third-party use needs guidance":"Notetakers are coming, or arrive with counterparties, and need guidance"},"G06":{"No":"Employees have had no training on AI tools","Informal or ad hoc":"Training on AI tools has been informal"},"G07":{"No":"Vendor intake does not ask about AI","Sometimes":"Vendor intake asks about AI only sometimes"},"G08":{"No":"Applicable AI rules have not been determined","Informally":"Applicable AI rules have been considered only informally"},"G09a":{"Oversight process only":"Directors have no rules for their own use of AI"},"G09b":{"Director-use rules only":"The board has no process for overseeing the company’s AI"},"G09c":{"Neither":"Board AI rules and oversight are undefined"},"G10":{"No":"No one is designated to handle an AI problem","Partly":"Handling of an AI problem is only partly defined"},"G11":{"Broad but informal":"AI use is broad but has no program around it"}},"noLine":[{"gap":"G05","option":"Not used internally, but rollout or third-party use needs guidance"},{"gap":"G06","option":"Informal or ad hoc"}]},"sample":{"company":{"name":"Harlow Diagnostics","sector":"Life sciences tools","headcount":180,"ownership":"VC-backed"},"headline":"Harlow Diagnostics’ acceptable-use policy needs updating or wider communication, transcription is on without rules on where transcripts go, and board AI rules and oversight are undefined.","role":"owner","answers":{"Q01":"Limited pockets","Q02":"Yes, maintained","Q03":"Exists but often bypassed","Q04":"A named role or body","Q05":"Exists but needs updating or broader communication","Q06":"Partly","Q07":"In use, partially","Q08":"Don’t know","Q09":"Yes, routinely","Q10":"No","Q11":"Neither","Q12":"Partly"},"tiles":{"Q01":{"source":"answer"},"Q02":{"source":"answer"},"Q03":{"source":"answer","note":"You report it is often bypassed."},"Q04":{"source":"answer","note":"You confirm a named approver for AI use cases."},"Q05":{"source":"answer"},"Q06":{"source":"answer"},"Q07":{"source":"answer"},"Q08":{"source":"none"},"Q09":{"source":"answer"},"Q10":{"source":"answer"},"Q11":{"source":"answer"},"Q12":{"source":"answer"}},"whys":{"G09c":"You answered “Neither”."}}}</script>
+<script type="application/json" id="page-config">{"practiceAddress":"AIGov@goodwinlaw.com","titleVariants":true,"sampleBannerWithoutDocuments":true}</script>
+<script>/* A small PDF writer: text in PDF's standard fonts (Helvetica and Times, WinAnsi encoding, laid out with their Adobe widths) and
+   filled rectangles; no fonts embedded, no images. It writes the Map's PDF here, and the sample policy in tools/make-sample-docs.mjs.
+   A character the fonts cannot show prints as "?". */
+(function (root) {
+  'use strict';
+  const W = {"helv":[278,278,355,556,556,889,667,191,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,278,278,584,584,584,556,1015,667,667,722,722,667,611,778,722,278,500,667,556,833,722,778,667,778,722,667,611,722,667,944,667,667,611,278,278,278,469,556,333,556,556,500,556,556,278,556,556,222,222,500,222,833,556,556,556,556,333,500,278,556,500,722,500,500,500,334,260,334,584],"helvB":[278,333,474,556,556,889,722,238,333,333,389,584,278,333,278,278,556,556,556,556,556,556,556,556,556,556,333,333,584,584,584,611,975,722,722,722,722,667,611,778,722,278,556,722,611,833,722,778,667,778,722,667,611,722,667,944,667,667,611,333,278,333,584,556,333,556,611,556,611,556,333,611,611,278,278,556,278,889,611,611,611,611,389,556,333,611,556,778,556,556,500,389,280,389,584],"times":[250,333,408,500,500,833,778,180,333,333,500,564,250,333,250,278,500,500,500,500,500,500,500,500,500,500,278,278,564,564,564,444,921,722,667,667,722,611,556,722,722,333,389,722,611,889,722,722,556,722,667,556,611,722,722,944,722,722,611,333,278,333,469,500,333,444,500,444,500,444,333,500,500,278,278,500,278,778,500,500,500,500,333,389,278,500,500,722,500,500,444,480,200,480,541],"timesB":[250,333,555,500,500,1000,833,278,333,333,500,570,250,333,250,278,500,500,500,500,500,500,500,500,500,500,333,333,570,570,570,500,930,722,667,722,722,667,611,778,778,389,500,778,667,944,722,778,611,778,722,556,667,722,722,1000,722,722,667,333,278,333,581,500,333,500,556,444,556,444,333,500,556,278,333,556,278,833,556,500,556,556,444,389,333,556,500,722,500,500,444,394,220,394,520]};
+  /* character: [WinAnsi code, Helvetica, Helvetica-Bold, Times-Roman, Times-Bold] */
+  const EX = {"‘":[145,222,278,333,333],"’":[146,222,278,333,333],"“":[147,333,500,444,500],"”":[148,333,500,444,500],"•":[149,350,350,350,350],"–":[150,556,556,500,500],"—":[151,1000,1000,1000,1000]," ":[160,278,278,250,250],"§":[167,556,556,500,500],"·":[183,278,278,250,250],"…":[133,1000,1000,1000,1000],"é":[233,556,556,444,444]};
+  const FONTS = { helv: ['Helvetica', 0], helvB: ['Helvetica-Bold', 1], times: ['Times-Roman', 2], timesB: ['Times-Bold', 3] };
+  const KEYS = Object.keys(FONTS);
+  function glyph(ch, font) {
+    const c = ch.charCodeAt(0), k = FONTS[font][1];
+    if (c >= 32 && c <= 126) return [c, W[font][c - 32]];
+    const x = EX[ch];
+    return x ? [x[0], x[1 + k]] : [63, W[font][63 - 32]];
+  }
+  const width = (s, font, size) => Array.from(String(s)).reduce((w, ch) => w + glyph(ch, font)[1], 0) * size / 1000;
+  function str(s, font) {
+    return '(' + Array.from(String(s)).map((ch) => {
+      const b = glyph(ch, font)[0];
+      const t = String.fromCharCode(b);
+      return t === '(' || t === ')' || t === '\\' ? '\\' + t : b < 32 || b > 126 ? '\\' + b.toString(8).padStart(3, '0') : t;
+    }).join('') + ')';
+  }
+  const num = (n) => (Math.round(n * 100) / 100).toString();
+  const rgb = (c) => (c || [0, 0, 0]).map((v) => num(v / 255)).join(' ');
+  /* Lines of at most maxW points, broken at spaces; a word longer than the line is left whole. */
+  function wrap(text, font, size, maxW) {
+    const out = [];
+    for (const para of String(text).split('\n')) {
+      let line = '';
+      for (const w of para.split(/ +/).filter(Boolean)) {
+        const next = line ? line + ' ' + w : w;
+        if (line && width(next, font, size) > maxW) { out.push(line); line = w; } else line = next;
+      }
+      out.push(line);
+    }
+    return out;
+  }
+  /* create({width, height, margin}) → a document with a cursor (y, from the top) that text and boxes move down. */
+  function create(opt) {
+    const o = Object.assign({ width: 612, height: 792, margin: 54, marginTop: null, marginBottom: null, footer: null }, opt || {});
+    const top = o.marginTop == null ? o.margin : o.marginTop, bottom = o.marginBottom == null ? o.margin : o.marginBottom;
+    const pages = [];
+    let cmds = null;
+    const doc = { y: 0, left: o.margin, right: o.width - o.margin };
+    doc.newPage = () => { cmds = []; pages.push(cmds); doc.y = top; return doc; };
+    doc.ensure = (h) => { if (!cmds || doc.y + h > o.height - bottom) doc.newPage(); return doc; };
+    doc.space = (h) => { doc.y += h; return doc; };
+    /* one line at (x, y from the top of the page, the baseline) */
+    doc.line = (x, y, s, font, size, color) => { if (!cmds) doc.newPage(); cmds.push(rgb(color) + ' rg BT /F' + (FONTS[font][1] + 1) + ' ' + num(size) + ' Tf 1 0 0 1 ' + num(x) + ' ' + num(o.height - y) + ' Tm ' + str(s, font) + ' Tj ET'); return doc; };
+    doc.rect = (x, y, w, h, fill) => { if (!cmds) doc.newPage(); cmds.push(rgb(fill) + ' rg ' + num(x) + ' ' + num(o.height - y - h) + ' ' + num(w) + ' ' + num(h) + ' re f'); return doc; };
+    /* a paragraph at the cursor: {font, size, color, x, maxW, lead, align}; moves the cursor below it, starting a page when the next line doesn't fit */
+    doc.text = (s, t) => {
+      t = Object.assign({ font: 'helv', size: 10, color: [0, 0, 0], x: doc.left, lead: null, align: 'left' }, t || {});
+      const maxW = t.maxW == null ? doc.right - t.x : t.maxW, lead = t.lead == null ? t.size * 1.35 : t.lead;
+      for (const l of wrap(s, t.font, t.size, maxW)) {
+        doc.ensure(lead);
+        doc.y += lead;
+        const x = t.align === 'center' ? t.x + (maxW - width(l, t.font, t.size)) / 2 : t.x;
+        doc.line(x, doc.y - (lead - t.size) / 2 - t.size * 0.2, l, t.font, t.size, t.color);
+      }
+      return doc;
+    };
+    /* Draws runs of text in different fonts ([{ s, font }]) as one wrapped paragraph at one size (options: size, color, x, maxW, lead).
+       On each line a run's words go out as one string, so copied text keeps its spaces. */
+    doc.runs = (runs, t) => {
+      t = Object.assign({ size: 10, color: [0, 0, 0], x: doc.left, lead: null }, t || {});
+      const maxW = t.maxW == null ? doc.right - t.x : t.maxW, lead = t.lead == null ? t.size * 1.35 : t.lead;
+      const words = [];
+      for (const r of runs) for (const w of String(r.s).split(/ +/).filter(Boolean)) words.push({ w, font: r.font || 'helv' });
+      const gap = (f) => width(' ', f, t.size), lines = [];
+      let line = [], lw = 0;
+      for (const wd of words) {
+        const ww = width(wd.w, wd.font, t.size), add = line.length ? gap(wd.font) + ww : ww;
+        if (line.length && lw + add > maxW) { lines.push(line); line = [wd]; lw = ww; } else { line.push(wd); lw += add; }
+      }
+      if (line.length) lines.push(line);
+      for (const l of lines) {
+        doc.ensure(lead);
+        doc.y += lead;
+        const base = doc.y - (lead - t.size) / 2 - t.size * 0.2;
+        let x = t.x, i = 0;
+        while (i < l.length) {
+          let j = i, s = l[i].w;
+          while (j + 1 < l.length && l[j + 1].font === l[i].font) { j++; s += ' ' + l[j].w; }
+          if (i) x += gap(l[i].font);
+          doc.line(x, base, s, l[i].font, t.size, t.color);
+          x += width(s, l[i].font, t.size);
+          i = j + 1;
+        }
+      }
+      return doc;
+    };
+    doc.bytes = () => {
+      if (!pages.length) doc.newPage();
+      const objs = [], add = (s) => { objs.push(s); return objs.length; };
+      const catalog = add(null), pagesObj = add(null);
+      const widths = (font) => { const w = []; for (let c = 32; c <= 255; c++) { const ch = c <= 126 ? String.fromCharCode(c) : Object.keys(EX).find((k) => EX[k][0] === c); w.push(ch ? glyph(ch, font)[1] : 0); } return w.join(' '); };
+      const fonts = KEYS.map((k) => add('<< /Type /Font /Subtype /Type1 /BaseFont /' + FONTS[k][0] + ' /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths [' + widths(k) + '] >>'));
+      const fontRes = KEYS.map((k, i) => '/F' + (i + 1) + ' ' + fonts[i] + ' 0 R').join(' ');
+      const kids = pages.map((c, i) => {
+        const all = c.slice();
+        if (typeof o.footer === 'function') for (const f of o.footer(i + 1, pages.length) || []) all.push(rgb(f.color) + ' rg BT /F' + (FONTS[f.font || 'helv'][1] + 1) + ' ' + num(f.size) + ' Tf 1 0 0 1 ' + num(f.x) + ' ' + num(o.height - f.y) + ' Tm ' + str(f.text, f.font || 'helv') + ' Tj ET');
+        const body = all.join('\n');
+        const content = add('<< /Length ' + body.length + ' >>\nstream\n' + body + '\nendstream');
+        return add('<< /Type /Page /Parent ' + pagesObj + ' 0 R /MediaBox [0 0 ' + o.width + ' ' + o.height + '] /Resources << /Font << ' + fontRes + ' >> >> /Contents ' + content + ' 0 R >>');
+      });
+      objs[catalog - 1] = '<< /Type /Catalog /Pages ' + pagesObj + ' 0 R >>';
+      objs[pagesObj - 1] = '<< /Type /Pages /Kids [' + kids.map((k) => k + ' 0 R').join(' ') + '] /Count ' + kids.length + ' >>';
+      let file = '%PDF-1.4\n';
+      const offsets = [];
+      objs.forEach((ob, i) => { offsets.push(file.length); file += (i + 1) + ' 0 obj\n' + ob + '\nendobj\n'; });
+      const xref = file.length;
+      file += 'xref\n0 ' + (objs.length + 1) + '\n0000000000 65535 f \n' + offsets.map((n) => String(n).padStart(10, '0') + ' 00000 n \n').join('');
+      file += 'trailer\n<< /Size ' + (objs.length + 1) + ' /Root ' + catalog + ' 0 R >>\nstartxref\n' + xref + '\n%%EOF\n';
+      const bytes = new Uint8Array(file.length);
+      for (let i = 0; i < file.length; i++) bytes[i] = file.charCodeAt(i) & 255;
+      return bytes;
+    };
+    return doc;
+  }
+  root.GWPDF = { create, width, wrap };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+<script>/* The AI Governance Map worked out from answers: statuses, sources, the areas to look at first and the questions for
+   decision-makers. Pure functions over script#content, no DOM. The rules are Goodwin's; where they leave a case open, the choice
+   is commented where it is made and listed in the folder's README. */
+(function (root) {
+  'use strict';
+  const DK = 'Don\u2019t know';
+  /* The words this page adds to Goodwin's own, in one place, so they can be listed for Goodwin's review; the Questions tab's label is Goodwin's. */
+  const OURS = {
+    tabs: { map: 'Map', questions: 'Questions to discuss', baseline: 'Goodwin\u2019s baseline' },
+    sections: 'Sections',
+    sampleTag: 'Sample data',
+    loading: 'Loading\u2026',
+    downloadPdf: 'Download PDF',
+    questionsPanel: 'The Health Check questions',
+    versionLabel: 'Version',
+    version: 'October 2026',
+    ownerLabel: 'Owner',
+    owner: 'Goodwin AI practice',
+    close: 'Close',
+    previousTile: 'Previous element',
+    nextTile: 'Next element',
+    baselineLabel: 'What Goodwin looks for',
+    whyItMatters: 'Why it matters:',
+    clickTile: 'Click any tile to see how it was reached.',
+    questionOf: 'Question {n} of {total}',
+    next: 'Next',
+    finish: 'See my Map',
+    back: 'Back',
+    backToSample: 'Back to the sample Map',
+    backToOwn: 'Back to your Map',
+    downloadCaption: 'PDF. The twelve tiles, priorities and questions.',
+    companyLine: '{title}. {sector}, {headcount} employees, {ownership}.',
+    answerLabel: 'Your answer',
+    copyAddress: 'Copy address',
+    agreeToNote: 'I have read and agree to the Important Note above.',
+    emailGoodwin: 'Email Goodwin',
+    copied: 'Address copied.',
+    copyFailed: 'The address couldn\u2019t be copied. It is selected: copy it with your keyboard.',
+    downloadOpen: 'Another download is waiting for your answer, or was asked for just now. Try again in a moment.',
+    why: 'You answered \u201c{option}\u201d.',
+    downloadFailed: 'The download didn\u2019t start. Try again.',
+    pdfPage: 'Page {n} of {total}',
+  };
+  const fill = (s, v) => String(s).replace(/\{(\w+)\}/g, (m, k) => (k in v ? String(v[k]) : m));
+
+  /* The Map. answers: { Q01: option label, ... }; a question with no answer gets no status, source or priority. opts.sample: the
+     sample company's Map, whose sources, notes and priority sentences are the sample's own. */
+  function compute(C, answers, opts) {
+    const o = Object.assign({ sample: false, titleVariants: true }, opts || {});
+    const S = C.sample, labels = C.copy.statusLabels, sources = C.copy.sourceLabels;
+    const base = Object.fromEntries(C.baseline.items.map((b) => [b.id, b]));
+    const tiles = [], statuses = {}, raised = new Map();
+    for (const q of C.questions) {
+      const a = answers[q.id];
+      const opt = q.options.find((x) => x.label === a) || null;
+      const status = opt ? opt.status : null;
+      statuses[q.id] = status;
+      if (opt) for (const m of C.priority.map) if (m.question === q.id && m.triggers.includes(a)) {
+        if (!raised.has(m.gap)) raised.set(m.gap, []);
+        raised.get(m.gap).push({ q: q.id, option: a, status, line: m.line });
+      }
+      let source = !opt ? null : a === DK ? 'none' : 'answer';
+      const t = o.sample && S.tiles[q.id] ? S.tiles[q.id] : null;
+      if (t && opt) source = sourceOf(t, a);
+      tiles.push({
+        id: q.id, name: q.name, area: q.area, question: q.question, status, statusLabel: status ? labels[status] : null, answer: a == null ? null : a,
+        source, sourceLabel: source ? sources[source] : null, category: source ? categoryOf(source) : null,
+        evidence: t && t.evidence ? t.evidence : null, flag: t && t.flag ? t.flag : null, note: t && t.note ? t.note : null,
+        baseline: base[q.id] ? base[q.id].statement : null,
+      });
+    }
+    const dkCount = C.questions.filter((q) => answers[q.id] === DK).length;
+    /* three, not the four in Goodwin's priority rules: their later review lowered it */
+    const visibility = dkCount >= 3;
+    const ranked = C.priority.order.filter((g) => raised.has(g));
+    const byNA = (g) => raised.get(g).some((r) => r.status === 'not_addressed');
+    const anyNA = Object.values(statuses).includes('not_addressed');
+    /* Goodwin's rule: the first three gaps in order; if any answer is Not addressed and none of those came from one, the last is
+       replaced by the highest-ranked gap a Not addressed answer raised. With the visibility finding, which allows one further
+       priority, the rule is applied to that one. */
+    const pri = ranked.slice(0, visibility ? 1 : 3);
+    if (anyNA && pri.length && !pri.some(byNA)) { const na = ranked.find(byNA); if (na) pri[pri.length - 1] = na; }
+    const cards = pri.map((g) => card(C, g, raised.get(g), o));
+    if (visibility) cards.unshift({ gap: C.priority.visibility.gap, title: C.priority.visibility.line, line: null, why: C.priority.visibility.follow });
+    const M = C.copy.map;
+    const heading = visibility ? M.visibility_heading : cards.length === 3 ? M.priorities_heading : cards.length === 2 ? M.priorities_heading_two : cards.length === 1 ? M.priorities_heading_one : null;
+    return {
+      sample: o.sample, complete: C.questions.every((q) => statuses[q.id]), tiles, dkCount, visibility,
+      gaps: [...raised.keys()], ranked, cards, heading, none: cards.length === 0 ? M.none : null,
+      questions: cards.map((c) => C.priority.questions[c.gap]).filter(Boolean), framingNote: M.questions_framing_note, lead: M.priorities_lead,
+      title: o.sample ? S.headline : M.title,
+      summary: o.sample ? null : summaryOf(C, cards, visibility, M),
+    };
+  }
+  /* A person's own Map opens with one sentence: the visibility line when it leads, else the no-priorities text's first sentence, else the
+     card titles joined (semicolons if a title has its own comma; later titles lower-cased unless they open with an abbreviation such as AI). */
+  function summaryOf(C, cards, visibility, M) {
+    if (visibility) return C.priority.visibility.line;
+    if (!cards.length) return M.none.split(/(?<=\.) /)[0];
+    const t = cards.map((c, i) => { const s = c.title.replace(/\.$/, ''); return i && !/^[A-Z]{2}/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s; });
+    const sep = t.some((s) => s.includes(',')) ? '; ' : ', ';
+    return (t.length === 1 ? t[0] : t.slice(0, -1).join(sep) + sep + 'and ' + t[t.length - 1]) + '.';
+  }
+  /* The answer that raised a gap and so chooses its card's title: a Not addressed one first (G02 can be raised by Q03 and Q04),
+     otherwise the first in question order. */
+  function card(C, gap, rows, o) {
+    const r = rows.find((x) => x.status === 'not_addressed') || rows[0];
+    const variant = o.titleVariants && C.priority.titles[gap] ? C.priority.titles[gap][r.option] : null;
+    const why = o.sample && C.sample.whys[gap] ? C.sample.whys[gap] : fill(OURS.why, { option: r.option });
+    /* With a title variant, leave out Goodwin's shared gap line for the answers in priority.noLine, which that line contradicts. */
+    const line = variant && (C.priority.noLine || []).some((x) => x.gap === gap && x.option === r.option) ? null : r.line;
+    return variant ? { gap, title: variant, line, why, trigger: r.q, option: r.option } : { gap, title: r.line, line: null, why, trigger: r.q, option: r.option };
+  }
+  /* Goodwin's rule for a tile's source: which input set the status, and whether a quote is beside it. */
+  function sourceOf(t, answer) {
+    if (t.source === 'none') return 'none';
+    if (t.source === 'answer') return t.evidence ? 'answer_with_document' : 'answer';
+    if (t.source === 'document_unconfirmed') return 'document_unconfirmed';
+    if (t.source === 'document') return answer && answer !== DK ? 'document_with_answer' : 'document';
+    return 'none';
+  }
+  /* The four kinds of source in acceptance test 3, which the six labels above render. */
+  function categoryOf(s) { return s === 'answer' || s === 'answer_with_document' ? 'answer' : s === 'document' || s === 'document_with_answer' ? 'document' : s === 'document_unconfirmed' ? 'document_unconfirmed' : 'none'; }
+  const questionsHeading = (C, role) => C.copy.map['questions_heading_' + (role || 'explorer')];
+  const endingLead = (C, role) => (role ? C.copy.endings[role] : null);
+  /* The practice's address, or null while it is not a plain e-mail address (Goodwin supplies it before launch). */
+  const practiceAddress = (a) => (typeof a === 'string' && /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(a) ? a : null);
+  const mailto = (C, address) => 'mailto:' + address + '?subject=' + encodeURIComponent(C.copy.cta.subject) + '&body=' + encodeURIComponent(C.copy.cta.body);
+  root.GWEngine = { DK, OURS, fill, compute, sourceOf, categoryOf, questionsHeading, endingLead, practiceAddress, mailto };
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+<script>/* Goodwin AI Governance Benchmark: what the page draws, and the Health Check. Everything is worked out in the page from its own data
+   (script#content) by GWEngine; nothing is saved and nothing is sent anywhere. The only capability used is downloads, for the Map
+   as a PDF. Text always goes into the page as text (textContent), never as HTML. */
+(function (root) {
+  'use strict';
+  const E = root.GWEngine, OURS = E.OURS;
+  const read = (id) => { try { const el = document.getElementById(id); return el ? JSON.parse(el.textContent) : null; } catch (e) { return null; } };
+  const C = read('content'), CFG = read('page-config') || {};
+  const mount = document.getElementById('root');
+  if (!C || !mount) return;
+  /* The practice's address: one value, in script#page-config. Until it is a real address the
+     contact button and the address are left out, so the page can never offer a broken mailto link. */
+  const ADDRESS = E.practiceAddress(CFG.practiceAddress);
+  /* Anthropic's approved sentence for pages where a person's own documents were read. This version reads none, so it is empty
+     and shown nowhere; it waits for the documents path. */
+  const DOCUMENTS_SENTENCE = '';
+  const TITLE_VARIANTS = CFG.titleVariants !== false;
+  const BANNER = CFG.sampleBannerWithoutDocuments === false ? C.copy.sampleBanner : C.copy.sampleBanner.replace(' or documents.', '.');
+  const NOTE = { label: C.copy.importantNote.label, text: E.fill(C.copy.importantNote.text, { tool: C.copy.importantNote.tool }) };
+  const LEGEND = C.copy.advertisingLegend;
+  /* Frame serves a page from a host named for its id. Only the published page's ids show Goodwin's name and mark in the header; a copy
+     made with "Make it yours" gets a new id, so it and any other host show Goodwin's attribution line instead. */
+  const OFFICIAL_IDS = ['9c22d28a-641a-402b-b9b6-6520c1f55fa0', '0a2ed989-2a54-4e1c-9726-b770b6a25433', '63bb1dfc-20be-47a3-8fd5-b9daf702fe45'];
+  const BRANDED = (() => { try { const host = String(root.location.hostname); return /\.frame\.(staging\.)?claudeusercontent\.com$/.test(host) && OFFICIAL_IDS.includes(host.split('.')[0].replace(/-top$/, '')); } catch (e) { return false; } })();
+  const PRODUCT = BRANDED ? C.copy.productName : C.copy.productName.replace(/^Goodwin\s+/, '');
+  if (BRANDED) document.title = PRODUCT;
+
+  const S = {
+    view: 'map',            // map | questions | baseline | check
+    own: null,              // the person's answers once the Health Check is finished; null shows the sample company
+    draft: null,            // answers while a Health Check is under way; null when none is
+    idx: 0,                 // the open question
+    role: { sample: C.sample.role, own: null, explore: null },
+    sheet: null,            // { kind: 'tile', id } | { kind: 'qs' }
+    downloads: null,
+    contact: { open: false, agreed: false },  // the contact step on this screen; closing it or leaving the screen clears both
+  };
+  const onSample = () => !S.own;
+  const model = () => E.compute(C, onSample() ? C.sample.answers : S.own, { sample: onSample(), titleVariants: TITLE_VARIANTS });
+  /* The role question is asked once on a Map (the sample's is the sample's own) and once at the end of the baseline screen. */
+  const roleKey = () => (S.view === 'baseline' ? 'explore' : onSample() ? 'sample' : 'own');
+  const role = () => S.role[roleKey()];
+
+  // ── small DOM helpers ──
+  function h(tag, attrs, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (v == null || v === false) continue;
+      if (k === 'text') el.textContent = v;
+      else if (k === 'class') el.className = v;
+      else if (k.startsWith('on')) { if (typeof v !== 'function') throw new Error('h(): ' + k + ' must be a function'); el.addEventListener(k.slice(2), v); }
+      else el.setAttribute(k, v === true ? '' : String(v));
+    }
+    for (const c of kids.flat()) if (c != null && c !== false) el.append(typeof c === 'string' ? document.createTextNode(c) : c);
+    return el;
+  }
+  const ICONS = { left: 'M10 3 5 8l5 5', right: 'M6 3l5 5-5 5', close: 'M4 4l8 8M12 4l-8 8', arrow: 'M3 8h10M9 4l4 4-4 4', tick: 'M3 8.5l3 3 7-7' };
+  function icon(name) {
+    const NS = 'http://www.w3.org/2000/svg', s = document.createElementNS(NS, 'svg'), p = document.createElementNS(NS, 'path');
+    s.setAttribute('viewBox', '0 0 16 16'); s.setAttribute('aria-hidden', 'true'); s.setAttribute('focusable', 'false');
+    p.setAttribute('d', ICONS[name]); p.setAttribute('stroke-linecap', 'round'); p.setAttribute('stroke-linejoin', 'round');
+    s.append(p); return s;
+  }
+  let toastTimer = 0;
+  const live = h('div', { class: 'toast', role: 'status', 'aria-live': 'polite', hidden: true });
+  document.body.append(live);
+  function toast(text) {
+    live.textContent = ''; live.hidden = false;
+    setTimeout(() => { live.textContent = text; }, 50);
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => { live.hidden = true; live.textContent = ''; }, 4000);
+  }
+
+  // ── moving around: every view and sheet is a step in the browser's history ──
+  let sheetPushed = false, pendingFocus = null;
+  function go(next, opts) {
+    const push = ('view' in next && next.view !== S.view) || (next.sheet && !S.sheet);
+    if ('view' in next && next.view !== S.view) S.contact = { open: false, agreed: false };
+    sheetPushed = push ? !!(next.sheet && !('view' in next && next.view !== S.view)) : sheetPushed && !!next.sheet;
+    Object.assign(S, next);
+    try { history[push ? 'pushState' : 'replaceState']({ gw: { view: S.view, sheet: S.sheet, idx: S.idx } }, ''); } catch (e) { /* no history in this view */ }
+    render(opts);
+  }
+  root.addEventListener('popstate', (ev) => {
+    const st = ev.state && ev.state.gw;
+    if (!st) { if (S.view !== 'map') S.contact = { open: false, agreed: false }; S.view = 'map'; S.sheet = null; render(); return; }
+    if (st.view === 'check' && !S.draft) S.draft = Object.assign({}, S.own || {});
+    if (st.view !== S.view) S.contact = { open: false, agreed: false };
+    /* a question's position comes back only with a question screen; the Health Check never has a sheet over it */
+    Object.assign(S, { view: st.view, sheet: st.view === 'check' ? null : st.sheet });
+    if (st.view === 'check') S.idx = Math.min(Math.max(Number(st.idx) || 0, 0), C.questions.length - 1);
+    if (!S.sheet) sheetPushed = false;
+    render();
+    if (pendingFocus) { const el = document.getElementById(pendingFocus); pendingFocus = null; if (el) el.focus(); }
+  });
+  /* Escape closes an open sheet wherever focus is, and focus never leaves an open sheet */
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && S.sheet) { e.preventDefault(); closeSheet(); } });
+  /* Tab wraps inside an open sheet */
+  document.addEventListener('keydown', (e) => {
+    const sh = e.key === 'Tab' && S.sheet && document.querySelector('.sheet');
+    if (!sh) return;
+    const all = [...sh.querySelectorAll('button:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')].filter((x) => x.getClientRects().length);
+    if (!all.length) return;
+    const first = all[0], last = all[all.length - 1], at = document.activeElement;
+    if (e.shiftKey && (at === first || !sh.contains(at))) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (at === last || !sh.contains(at))) { e.preventDefault(); first.focus(); }
+  });
+  document.addEventListener('focusin', (e) => {
+    const sh = S.sheet && document.querySelector('.sheet');
+    if (sh && !sh.contains(e.target)) { const f = sh.querySelector('[data-autofocus]') || sh; f.focus(); }
+  });
+
+  // ── the page ──
+  let lastFocus = null;
+  function render(opts) {
+    const m = model();
+    const page = h('div', { class: 'page' },
+      appbar(),
+      h('main', { class: 'wrap', id: 'main' },
+        S.view === 'check' ? checkView() : S.view === 'baseline' ? baselineView(m) : S.view === 'questions' ? questionsView(m) : mapView(m)));
+    mount.replaceChildren(page);
+    renderSheet(m);
+    if (opts && opts.top) root.scrollTo(0, 0);
+    if (opts && opts.focus) { const f = document.getElementById(opts.focus); if (f) f.focus({ preventScroll: !!(opts && opts.top) }); }
+  }
+  function appbar() {
+    const inCheck = S.view === 'check';
+    const tab = (id, label) => h('button', { class: 'tab caps', type: 'button', 'aria-current': S.view === id ? 'page' : null, onclick: () => go({ view: id, sheet: null }, { top: true, focus: id + '-title' }) }, label);
+    return h('header', { class: 'appbar' },
+      BRANDED ? h('span', { class: 'firm' }, h('span', { class: 'firm__name', text: 'Goodwin' })) : null,
+      h('span', { class: 'appbar__name', id: BRANDED ? null : 'attribution', text: BRANDED ? C.copy.productName.replace(/^Goodwin\s+/, '') : C.copy.attribution }),
+      inCheck ? null : h('nav', { class: 'tabs', 'aria-label': OURS.sections }, tab('map', OURS.tabs.map), tab('baseline', OURS.tabs.baseline), tab('questions', OURS.tabs.questions)));
+  }
+  function entries() {
+    const [explore, check] = ['explore', 'check'].map((id) => C.copy.entryButtons.find((b) => b.id === id));
+    const entry = (b, main, onclick) => h('button', { class: 'entry' + (main ? ' entry--main' : ''), type: 'button', onclick },
+      h('span', { class: 'entry__label' }, b.label), h('span', { class: 't-caption', text: b.sub }));
+    return h('div', { class: 'entries' },
+      entry(explore, false, () => go({ view: 'baseline', sheet: null }, { top: true, focus: 'baseline-title' })),
+      entry(check, true, startCheck));
+  }
+  function hero() {
+    return h('section', { class: 'hero' },
+      h('h1', { class: 'hero__headline', text: C.copy.headline }),
+      h('p', { class: 't-lead hero__sub', text: C.copy.subhead }),
+      h('p', { class: 't-caption hero__by', text: C.copy.byline }),
+      entries());
+  }
+  const sampleBanner = () => (onSample() ? h('p', { class: 'banner', id: 'sample-banner' }, h('span', { class: 'tag', text: OURS.sampleTag }), h('span', { class: 't-body', text: BANNER })) : null);
+  function tileEl(t) {
+    return h('button', { class: 'tile', type: 'button', id: 'tile-' + t.id, 'data-status': t.status, 'aria-haspopup': 'dialog', 'data-open': S.sheet && S.sheet.id === t.id ? 'true' : null, onclick: () => openTile(t.id) },
+      h('span', { class: 'tile__name', text: t.name }),
+      h('span', { class: 'tile__status', text: t.statusLabel }),
+      h('span', { class: 'tile__source', text: t.sourceLabel }));
+  }
+  function mapView(m) {
+    const co = C.sample.company;
+    /* a person's own Map is already titled "Your AI Governance Map" */
+    const subline = onSample() ? E.fill(OURS.companyLine, { title: C.copy.map.title, sector: co.sector, headcount: co.headcount, ownership: co.ownership }) : null;
+    const areas = h('div', { class: 'areas', id: 'map' }, C.areas.map((a, i) => h('section', { class: 'area', 'aria-labelledby': 'area-' + i },
+      h('h3', { class: 'area__head t-strong', id: 'area-' + i, text: a }),
+      h('div', { class: 'area__cells' }, m.tiles.filter((t) => t.area === a).map(tileEl)))));
+    return h('div', { class: 'view' },
+      hero(),
+      importantNote('important-note'),
+      sampleBanner(),
+      h('div', { class: 'phead' },
+        h('div', { class: 'phead__main' },
+          /* going to the Map puts focus on this heading, which comes after the Important Note, so the note is its description and is read with it */
+          h('h2', { class: 't-title rule', id: 'map-title', tabindex: '-1', 'aria-describedby': 'important-note', text: m.title }),
+          subline ? h('p', { class: 't-caption', text: subline }) : null,
+          m.summary ? h('p', { class: 't-lead', id: 'own-summary', text: m.summary }) : null),
+        h('div', { class: 'actions' }, h('button', { class: 'quiet caps', type: 'button', onclick: () => go({ sheet: { kind: 'qs' } }) }, OURS.questionsPanel))),
+      h('div', { class: 'mapblock' }, h('p', { class: 't-caption', text: OURS.clickTile }), areas),
+      h('hr', { class: 'divider' }),
+      h('p', { class: 't-lead', text: m.lead }),
+      prioritiesSection(m),
+      onSample() ? null : rolePanel(),
+      questionsSection(m, true),
+      onSample() ? null : ending(),
+      h('hr', { class: 'divider' }),
+      downloadBand(),
+      noPriorities(m),
+      contact(),
+      footer({ note: false }));
+  }
+  function noPriorities(m) { return m.none ? h('p', { class: 't-body', id: 'no-priorities', text: m.none }) : null; }
+  function prioritiesSection(m) {
+    if (!m.cards.length) return null;
+    return h('section', { class: 'section', id: 'priorities' },
+      h('h3', { class: 't-strong section__head', text: m.heading }),
+      h('div', { class: 'cards' }, m.cards.map((c) => h('article', { class: 'card', 'data-gap': c.gap },
+        h('h4', { class: 't-strong', text: c.title }),
+        c.line ? h('p', { class: 't-body', text: c.line }) : null,
+        h('p', { class: 't-body card__why', text: c.why })))));
+  }
+  function rolePanel() {
+    const r = role();
+    return h('section', { class: 'panel', id: 'role' },
+      h('h3', { class: 't-strong', id: 'role-prompt', text: C.copy.roleQuestion.prompt }),
+      h('div', { class: 'roles', role: 'group', 'aria-labelledby': 'role-prompt' }, C.copy.roleQuestion.options.map((o) =>
+        h('button', { class: 'choice', type: 'button', 'data-role': o.id, 'aria-pressed': r === o.id ? 'true' : 'false', onclick: () => setRole(o.id) }, r === o.id ? icon('tick') : null, o.label))));
+  }
+  function setRole(id) {
+    S.role[roleKey()] = id;
+    render({ focus: null });
+    const b = document.querySelector('.choice[data-role="' + id + '"]'); if (b) b.focus({ preventScroll: true });
+  }
+  function questionsSection(m, asSection) {
+    if (!m.questions.length) return null;
+    return h('section', { class: 'section', id: 'dm-questions' },
+      asSection ? h('h3', { class: 't-strong section__head', text: E.questionsHeading(C, role()) }) : null,
+      h('p', { class: 't-caption', text: m.framingNote }),
+      h('ul', { class: 'qlist t-body' }, m.questions.map((q) => h('li', { text: q }))));
+  }
+  /* the ending's first sentence, for the role chosen; on the baseline screen, which has no Map, only the explorer's fits */
+  function ending() {
+    const lead = S.view === 'baseline' && role() !== 'explorer' ? null : E.endingLead(C, role());
+    return lead ? h('section', { class: 'ending', id: 'ending' }, h('p', { class: 't-lead', id: 'ending-lead', text: lead })) : null;
+  }
+  function downloadBand() {
+    if (!S.downloads) return null;
+    return h('section', { class: 'download', id: 'download' },
+      h('button', { class: 'btn btn--line', type: 'button', onclick: download }, C.copy.cta.downloadLabel),
+      h('span', { class: 't-caption', text: OURS.downloadCaption }));
+  }
+  function importantNote(id) {
+    return h('p', { class: 't-body important', id }, h('strong', { text: NOTE.label }), ' ' + NOTE.text);
+  }
+  /* The button opens the Important Note with an unticked box. The e-mail link and the shown address are drawn only while the box is
+     ticked; the address itself stays in script#page-config. Nothing records the agreement. */
+  function contact() {
+    const cta = C.copy.cta, st = S.contact;
+    return h('section', { class: 'panel contact', id: 'contact' },
+      h('h3', { class: 't-strong', text: cta.heading }),
+      h('p', { class: 't-body', text: cta.text }),
+      ADDRESS ? h('div', { class: 'btnrow' },
+        h('button', { class: 'btn btn--line', type: 'button', id: 'contact-open', 'aria-expanded': st.open ? 'true' : 'false', 'aria-controls': st.open ? 'contact-step' : null, onclick: toggleContact }, cta.buttonLabel)) : null,
+      ADDRESS && st.open ? h('div', { class: 'contact__step', id: 'contact-step' },
+        importantNote('contact-note'),
+        h('div', { class: 'agree' },
+          h('input', { type: 'checkbox', id: 'contact-agree', 'aria-describedby': 'contact-note', checked: st.agreed, onchange: (e) => setAgreed(e.target.checked) }),
+          h('label', { for: 'contact-agree', class: 't-body', text: OURS.agreeToNote })),
+        st.agreed ? h('div', { class: 'btnrow', id: 'contact-reveal' },
+          h('a', { class: 'btn btn--line', id: 'contact-button', href: E.mailto(C, ADDRESS) }, OURS.emailGoodwin),
+          h('span', { class: 'address', id: 'contact-address', text: ADDRESS }),
+          h('button', { class: 'quiet caps', type: 'button', onclick: copyAddress }, OURS.copyAddress)) : null) : null);
+  }
+  /* every change re-draws the page, so focus goes back to the control that was used; the page does not scroll */
+  function toggleContact() {
+    S.contact = { open: !S.contact.open, agreed: false };
+    render();
+    const b = document.getElementById('contact-open'); if (b) b.focus({ preventScroll: true });
+  }
+  function setAgreed(on) {
+    S.contact.agreed = !!on;
+    render();
+    const cb = document.getElementById('contact-agree'); if (cb) cb.focus({ preventScroll: true });
+  }
+  /* A mailto link may not open from inside the artifact's frame everywhere, so the address can also be copied. */
+  function copyAddress() {
+    const done = () => toast(OURS.copied);
+    const fallback = () => {
+      const el = document.getElementById('contact-address'), sel = root.getSelection && root.getSelection();
+      if (el && sel) { const r = document.createRange(); r.selectNodeContents(el); sel.removeAllRanges(); sel.addRange(r); }
+      toast(OURS.copyFailed);
+    };
+    try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(ADDRESS).then(done, fallback); else fallback(); }
+    catch (e) { fallback(); }
+  }
+  /* the screen's last paragraph is Goodwin's advertising legend; the Map shows the Important Note near its top instead of here */
+  function footer(opts) {
+    const withNote = !(opts && opts.note === false);
+    return h('footer', { class: 'foot' }, withNote ? importantNote('important-note') : null, h('p', { class: 't-caption', id: 'disclaimer', text: C.copy.disclaimer }),
+      DOCUMENTS_SENTENCE ? h('p', { class: 't-caption', text: DOCUMENTS_SENTENCE }) : null,
+      h('p', { class: 't-body legend', id: 'closing-legend' }, h('strong', { text: LEGEND.label }), ' ' + LEGEND.text));
+  }
+  function questionsView(m) {
+    return h('div', { class: 'view' },
+      sampleBanner(),
+      h('div', { class: 'phead' },
+        h('div', { class: 'phead__main' },
+          h('h2', { class: 't-title rule', id: 'questions-title', tabindex: '-1', text: E.questionsHeading(C, role()) }))),
+      questionsSection(m, false),
+      onSample() ? null : rolePanel(),
+      onSample() ? null : ending(),
+      h('hr', { class: 'divider' }),
+      downloadBand(),
+      noPriorities(m),
+      contact(),
+      footer());
+  }
+  function baselineView() {
+    const B = C.baseline, byId = Object.fromEntries(C.questions.map((q) => [q.id, q]));
+    const checkBtn = C.copy.entryButtons.find((b) => b.id === 'check');
+    return h('div', { class: 'view' },
+      h('div', { class: 'phead' },
+        h('div', { class: 'phead__main' },
+          h('h2', { class: 't-title rule', id: 'baseline-title', tabindex: '-1', text: B.label }),
+          h('p', { class: 't-lead', text: B.framing }))),
+      h('div', { class: 'areas', id: 'baseline' }, C.areas.map((a, i) => h('section', { class: 'area', 'aria-labelledby': 'barea-' + i },
+        h('h3', { class: 'area__head t-strong', id: 'barea-' + i, text: a }),
+        h('div', { class: 'btiles' }, B.items.filter((b) => byId[b.id] && byId[b.id].area === a).map((b) => h('article', { class: 'btile' },
+          h('span', { class: 't-strong', text: byId[b.id].name }),
+          h('p', { class: 't-body', text: b.statement }),
+          h('p', { class: 't-caption', text: b.why }))))))),
+      B.observations.length ? h('section', { class: 'section' }, B.observations.map((o) => h('p', { class: 't-body', text: typeof o === 'string' ? o : o.text }))) : null,
+      B.marketContext.length ? h('section', { class: 'section' }, B.marketContext.map((o) => h('p', { class: 't-body', text: typeof o === 'string' ? o : [o.text, o.source, o.date, o.population].filter(Boolean).join(' \u00b7 ') }))) : null,
+      h('div', { class: 'btnrow' }, h('button', { class: 'btn btn--primary', type: 'button', onclick: startCheck }, checkBtn.label)),
+      rolePanel(),
+      ending(),
+      contact(),
+      footer());
+  }
+
+
+  // ── the Health Check: one question at a time; the baseline is never on these screens ──
+  function startCheck() {
+    if (S.draft) { go({ view: 'check', sheet: null }, { top: true, focus: 'check-title' }); return; }
+    go({ view: 'check', sheet: null, idx: 0, draft: Object.assign({}, S.own || {}) }, { top: true, focus: 'check-title' });
+  }
+  function checkView() {
+    const q = C.questions[S.idx], chosen = S.draft[q.id], n = C.questions.length;
+    return h('div', { class: 'check', id: 'check' },
+      h('button', { class: 'back', type: 'button', onclick: () => go({ view: 'map' }, { top: true, focus: 'map-title' }) }, icon('left'), onSample() ? OURS.backToSample : OURS.backToOwn),
+      h('div', { class: 'check__progress' },
+        h('div', { class: 'check__meta' }, h('span', { class: 't-caption', text: E.fill(OURS.questionOf, { n: S.idx + 1, total: n }) }), h('span', { class: 't-caption', text: q.area })),
+        h('div', { class: 'progress', 'aria-hidden': 'true' }, h('span', { style: 'width:' + Math.round(((S.idx + 1) / n) * 100) + '%' }))),
+      h('h2', { class: 't-title', id: 'check-title', tabindex: '-1', text: q.question }),
+      h('div', { class: 'check__body' },
+        h('div', { class: 'opts', role: 'radiogroup', 'aria-labelledby': 'check-title', onkeydown: (e) => {
+          /* a radio group: one Tab stop, and the arrow keys move the choice */
+          const d = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : e.key === 'ArrowUp' || e.key === 'ArrowLeft' ? -1 : 0;
+          if (!d) return;
+          e.preventDefault();
+          const at = q.options.findIndex((o) => o.label === S.draft[q.id]);
+          const n = q.options[(at < 0 ? (d > 0 ? 0 : q.options.length - 1) : (at + d + q.options.length) % q.options.length)];
+          choose(q.id, n.label);
+        } }, q.options.map((o, i) =>
+          h('button', { class: 'opt', type: 'button', role: 'radio', 'aria-checked': chosen === o.label ? 'true' : 'false', tabindex: chosen ? (chosen === o.label ? '0' : '-1') : (i === 0 ? '0' : '-1'), onclick: () => choose(q.id, o.label) }, o.label, chosen === o.label ? icon('tick') : null))),
+        h('p', { class: 't-caption', text: C.copy.dontKnowNote })),
+      h('div', { class: 'check__nav' },
+        S.idx > 0 ? h('button', { class: 'btn btn--line', type: 'button', id: 'check-back', onclick: () => go({ idx: S.idx - 1 }, { focus: 'check-title' }) }, OURS.back) : h('span'),
+        h('button', { class: 'btn btn--next', type: 'button', id: 'check-next', disabled: !chosen, onclick: next }, finishing() ? OURS.finish : OURS.next)));
+  }
+  /* the step that makes the Map: every other question answered, and this is the last one or the last skipped one */
+  const finishing = () => C.questions.every((q, i) => i === S.idx || S.draft[q.id]) && (S.fillingGaps || S.idx === C.questions.length - 1);
+  function choose(id, label) {
+    S.draft[id] = label;
+    render();
+    const b = [...document.querySelectorAll('.opt')].find((x) => x.textContent === label); if (b) b.focus();
+  }
+  function next() {
+    if (!S.draft[C.questions[S.idx].id]) return;
+    /* the Map is made only from twelve answers: questions skipped on the way (through the browser's history) are asked in turn */
+    const missing = C.questions.findIndex((q) => !S.draft[q.id]);
+    if (S.fillingGaps && missing >= 0) { go({ idx: missing }, { focus: 'check-title' }); return; }
+    if (!S.fillingGaps && S.idx < C.questions.length - 1) { go({ idx: S.idx + 1 }, { focus: 'check-title' }); return; }
+    if (missing >= 0) { S.fillingGaps = true; go({ idx: missing }, { focus: 'check-title' }); return; }
+    S.fillingGaps = false;
+    S.own = Object.assign({}, S.draft);
+    S.draft = null;
+    S.role.own = null;
+    go({ view: 'map', sheet: null }, { top: true, focus: 'map-title' });
+  }
+
+  // ── the side sheet ──
+  function openTile(id) { lastFocus = 'tile-' + id; go({ sheet: { kind: 'tile', id } }); }
+  function closeSheet() {
+    const id = S.sheet && S.sheet.id;
+    const f = lastFocus || (id ? 'tile-' + id : null);
+    if (sheetPushed) { sheetPushed = false; pendingFocus = f; try { history.back(); return; } catch (e) { pendingFocus = null; } }
+    go({ sheet: null });
+    const el = f && document.getElementById(f); if (el) el.focus();
+  }
+  let shownSheet = '', stepFocus = null;
+  function renderSheet(m) {
+    document.querySelectorAll('.scrim, .sheet').forEach((n) => n.remove());
+    const key = S.sheet ? JSON.stringify(S.sheet) : '';
+    const fresh = key !== shownSheet;
+    shownSheet = key;
+    /* the page behind an open sheet does not scroll */
+    document.body.classList.toggle('has-sheet', !!S.sheet);
+    if (!S.sheet) return;
+    const scrim = h('div', { class: 'scrim', onclick: closeSheet });
+    let sheet = null;
+    if (S.sheet.kind === 'tile') sheet = tileSheet(m, S.sheet.id);
+    else if (S.sheet.kind === 'qs') sheet = questionsSheet();
+    if (!sheet) return;
+    document.body.append(scrim, sheet);
+    /* a step to the next or previous tile keeps focus on the button used (or the title, at either end); a new sheet focuses its first control */
+    if (fresh && stepFocus) { const b = sheet.querySelector('[data-step="' + stepFocus + '"]:not([disabled])') || sheet.querySelector('#sheet-title'); if (b) b.focus(); }
+    else if (fresh) { const f = sheet.querySelector('[data-autofocus]'); if (f) f.focus(); }
+    stepFocus = null;
+  }
+  const closeBtn = () => h('button', { class: 'icon', type: 'button', 'aria-label': OURS.close, 'data-autofocus': true, onclick: closeSheet }, icon('close'));
+  function tileSheet(m, id) {
+    const i = m.tiles.findIndex((t) => t.id === id), t = m.tiles[i];
+    if (!t) return null;
+    const step = (d) => { const n = m.tiles[i + d]; if (n) { lastFocus = 'tile-' + n.id; stepFocus = d > 0 ? 'next' : 'prev'; go({ sheet: { kind: 'tile', id: n.id } }); } };
+    const base = C.baseline.items.find((b) => b.id === t.id);
+    return h('aside', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'sheet-title', id: 'tile-sheet', onkeydown: (e) => {
+      if (e.key === 'ArrowRight') { e.preventDefault(); step(1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); } } },
+      h('div', { class: 'sheet__bar' },
+        h('p', { class: 't-caption', text: t.area }),
+        h('div', { class: 'sheet__nav' },
+          h('button', { class: 'icon', type: 'button', 'data-step': 'prev', 'aria-label': OURS.previousTile, disabled: i === 0, onclick: () => step(-1) }, icon('left')),
+          h('button', { class: 'icon', type: 'button', 'data-step': 'next', 'aria-label': OURS.nextTile, disabled: i === m.tiles.length - 1, onclick: () => step(1) }, icon('right')),
+          closeBtn())),
+      h('div', { class: 'sheet__body', tabindex: '0' },
+        h('div', { class: 'sheet__head' },
+          h('h2', { class: 't-title', id: 'sheet-title', tabindex: '-1', text: t.name }),
+          h('p', { class: 't-lead', text: t.question }),
+          h('span', { class: 'pill', 'data-status': t.status, text: t.statusLabel })),
+        /* a tile's status always comes from its answer in this version, so the panel shows the answer with no separate source line */
+        t.answer || t.note ? h('div', { class: 'field' }, t.answer ? h('h3', { class: 't-strong', text: OURS.answerLabel }) : null, t.answer ? h('p', { class: 't-body', text: t.answer }) : null, t.note ? h('p', { class: 't-body', text: t.note }) : null) : null,
+        base ? h('div', { class: 'field field--rule' }, h('h3', { class: 't-strong', text: OURS.baselineLabel }), h('p', { class: 't-body', text: base.statement }), h('p', { class: 't-caption', text: OURS.whyItMatters + ' ' + base.why })) : null));
+  }
+  function questionsSheet() {
+    return h('aside', { class: 'sheet', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': 'sheet-title', id: 'qs-sheet' },
+      h('div', { class: 'sheet__bar' }, h('span', null), h('div', { class: 'sheet__nav' }, closeBtn())),
+      h('div', { class: 'sheet__body', tabindex: '0' },
+        h('h2', { class: 't-title', id: 'sheet-title', text: OURS.questionsPanel }),
+        h('div', { class: 'kv' }, h('span', { class: 't-label', text: OURS.versionLabel }), h('span', { class: 't-body', text: OURS.version }), h('span', { class: 't-label', text: OURS.ownerLabel }), h('span', { class: 't-body', text: OURS.owner })),
+        C.areas.map((a) => h('div', { class: 'field' }, h('h3', { class: 't-caption', text: a }), C.questions.filter((q) => q.area === a).map((q) => h('div', { class: 'qrow' }, h('span', { class: 't-strong', text: q.name }), h('span', { class: 't-body', text: q.question })))))));
+  }
+
+  // ── the Map as a PDF ──
+  const PDF_STATUS = { not_addressed: [233, 153, 62], partially_addressed: [248, 216, 173], addressed: [211, 233, 203], not_enough_information: [225, 227, 229] };
+  function mapPdf(m, r) {
+    const ink = [47, 53, 57], grey = [79, 86, 90], P = root.GWPDF;
+    /* the last page has no page-number line, so nothing on it comes after Goodwin's advertising legend */
+    const doc = P.create({ margin: 54, marginBottom: 60, footer: (n, total) => (n === total ? [] : [{ x: 54, y: 760, size: 8, color: grey, text: PRODUCT + ' \u00b7 ' + E.fill(OURS.pdfPage, { n, total }) }]) });
+    doc.newPage();
+    doc.text(BRANDED ? C.copy.productName : C.copy.attribution, { font: 'helvB', size: 9, color: grey });
+    doc.space(6);
+    doc.text(m.title, { font: 'helv', size: 18, lead: 23, color: ink });
+    doc.rect(54, doc.y + 6, 24, 3, [233, 153, 62]); doc.space(16);
+    /* Goodwin's Important Note under the title, no smaller than the body text further down */
+    doc.runs([{ s: NOTE.label, font: 'helvB' }, { s: NOTE.text, font: 'helv' }], { size: 10.5, color: ink }); doc.space(12);
+    /* Goodwin wants only the banner's first two sentences in the PDF */
+    if (m.sample) { doc.text(BANNER.split(/(?<=\.) +/).slice(0, 2).join(' '), { size: 9.5, color: grey }); doc.space(6); }
+    const width = doc.right - 70, rows = (s, f, z) => P.wrap(s, f, z, width).length;
+    const tileLines = (t) => {
+      const lines = [];
+      const base = C.baseline.items.find((b) => b.id === t.id);
+      if (t.answer) lines.push(OURS.answerLabel + ': ' + t.answer);
+      if (t.note) lines.push(t.note);
+      if (base) { lines.push(OURS.baselineLabel + ': ' + base.statement); lines.push(OURS.whyItMatters + ' ' + base.why); }
+      return lines;
+    };
+    const tileHeight = (t) => 6 + 13.5 + rows(t.question, 'helv', 9.5) * 12.8 + tileLines(t).reduce((n, l) => n + rows(l, 'helv', 8.8) * 11.9, 0);
+    for (const a of C.areas) {
+      const tiles = m.tiles.filter((x) => x.area === a);
+      /* an area's heading stays with its first tile, and a tile is kept on one page */
+      doc.ensure(8 + 16 + tileHeight(tiles[0])); doc.space(8);
+      doc.text(a, { font: 'helvB', size: 11, color: ink }); doc.space(2);
+      for (const t of tiles) {
+        const lines = tileLines(t);
+        doc.ensure(tileHeight(t));
+        doc.space(6);
+        doc.rect(54, doc.y + 3, 10, 10, PDF_STATUS[t.status] || [255, 255, 255]);
+        doc.text(t.name + ' \u00b7 ' + (t.statusLabel || ''), { font: 'helvB', size: 10, x: 70, color: ink });
+        doc.text(t.question, { size: 9.5, x: 70, color: ink });
+        for (const l of lines) doc.text(l, { size: 8.8, x: 70, color: grey });
+      }
+    }
+    doc.space(10); doc.ensure(40);
+    doc.text(m.lead, { size: 10.5, color: ink });
+    doc.space(10); doc.ensure(60);
+    if (m.cards.length) {
+      doc.text(m.heading, { font: 'helvB', size: 12, color: ink });
+      for (const c of m.cards) {
+        const cw = doc.right - doc.left, cr = (s, f, z) => P.wrap(s, f, z, cw).length;
+        doc.ensure(6 + cr(c.title, 'helvB', 10.5) * 14.2 + (c.line ? cr(c.line, 'helv', 10) * 13.5 : 0) + cr(c.why, 'helv', 10) * 13.5);
+        doc.space(6);
+        doc.text(c.title, { font: 'helvB', size: 10.5, color: ink });
+        if (c.line) doc.text(c.line, { size: 10, color: ink });
+        doc.text(c.why, { size: 10, color: ink });
+      }
+    }
+    if (m.questions.length) {
+      doc.space(12); doc.ensure(60);
+      doc.text(E.questionsHeading(C, r), { font: 'helvB', size: 12, color: ink });
+      doc.text(m.framingNote, { size: 9.5, color: grey });
+      m.questions.forEach((q) => { doc.space(3); doc.text('\u2022  ' + q, { size: 10, color: ink }); });
+    }
+    /* as on the page, the sample's Map has no ending sentence */
+    const lead = m.sample ? null : E.endingLead(C, r);
+    if (lead) { doc.space(12); doc.ensure(40); doc.text(lead, { size: 10.5, color: ink }); }
+    if (m.none) { doc.space(12); doc.ensure(40); doc.text(m.none, { size: 10.5, color: ink }); }
+    doc.space(12); doc.ensure(70);
+    doc.text(C.copy.cta.heading, { font: 'helvB', size: 11, color: ink });
+    doc.text(C.copy.cta.text, { size: 10, color: ink });
+    doc.text(C.copy.cta.pdfLine, { font: 'helvB', size: 10, color: ink });
+    /* room is measured with the legend all bold: no legend character is narrower in Helvetica Bold, so disclaimer and legend never split */
+    const fw = doc.right - doc.left, legend = [{ s: LEGEND.label, font: 'helvB' }, { s: LEGEND.text, font: 'helv' }];
+    const endHeight = P.wrap(C.copy.disclaimer, 'helv', 8.5, fw).length * 8.5 * 1.35 + 10 + P.wrap(LEGEND.label + ' ' + LEGEND.text, 'helvB', 10, fw).length * 13.5;
+    doc.space(14); doc.ensure(endHeight);
+    doc.text(C.copy.disclaimer, { size: 8.5, color: grey });
+    doc.space(10);
+    doc.runs(legend, { size: 10, color: ink });
+    return doc.bytes();
+  }
+  root.GWPage = { mapPdf: (r) => mapPdf(model(), r === undefined ? role() : r), model, state: S, branded: BRANDED };
+  async function download() {
+    if (!S.downloads) return;
+    let bytes;
+    try { bytes = mapPdf(model(), role()); } catch (e) { toast(OURS.downloadFailed); return; }
+    try { await S.downloads.save({ filename: C.copy.outputName + '.pdf', data: bytes }); }
+    catch (e) { const code = e && e.code; if (code === 'declined') return; if (code === 'rate_limited') { toast(OURS.downloadOpen); return; } if (code === 'unavailable' || code === 'not_granted' || code === 'capability_disabled' || code === 'capability_removed') { S.downloads = null; render(); return; } toast(OURS.downloadFailed); }
+  }
+
+  // ── start: the page is whole before any capability answers ──
+  try { history.replaceState({ gw: { view: S.view, sheet: null, idx: 0 } }, ''); } catch (e) { /* no history in this view */ }
+  render();
+  if (root.claude && typeof root.claude.use === 'function') {
+    Promise.resolve(root.claude.use('downloads')).then((d) => { if (d && d.available !== false && typeof d.save === 'function') { S.downloads = d; render(); } }, () => {});
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+</body>
+</html>

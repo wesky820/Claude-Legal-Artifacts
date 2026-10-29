@@ -1,0 +1,1147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ask Legal - 智能法务前台与全流程工件系统 (Legal Artifact)</title>
+  <style>
+    :root {
+      --bg-canvas: #FAF9F5;
+      --bg-card: #FFFFFF;
+      --bg-subtle: #F4F3EE;
+      --text-main: #1C1917;
+      --text-muted: #78716C;
+      --text-subtle: #A8A29E;
+      --border-color: #E7E5E4;
+      --border-dark: #D6D3D1;
+      --primary: #D97706; /* Warm amber/ochre characteristic of Claude */
+      --primary-hover: #B45309;
+      --primary-light: #FEF3C7;
+      --green-bg: #ECFDF5;
+      --green-text: #065F46;
+      --green-border: #A7F3D0;
+      --amber-bg: #FFFBEB;
+      --amber-text: #92400E;
+      --amber-border: #FDE68A;
+      --red-bg: #FEF2F2;
+      --red-text: #991B1B;
+      --red-border: #FECACA;
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+      --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+      --shadow-lg: 0 12px 24px -4px rgba(0, 0, 0, 0.12);
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-canvas);
+      color: var(--text-main);
+      font-family: var(--font-sans);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Top Navigation Header */
+    header {
+      background: var(--bg-card);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 600;
+      font-size: 16px;
+      letter-spacing: -0.2px;
+    }
+    .brand-tag {
+      background: #E0E7FF;
+      color: #3730A3;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .role-switcher {
+      display: flex;
+      background: var(--bg-subtle);
+      padding: 3px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border-color);
+      gap: 4px;
+    }
+    .role-btn {
+      border: none;
+      background: transparent;
+      padding: 6px 14px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: all 0.15s ease;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .role-btn.active {
+      background: var(--bg-card);
+      color: var(--text-main);
+      box-shadow: var(--shadow-sm);
+      font-weight: 600;
+    }
+
+    /* Main Container */
+    main {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      position: relative;
+    }
+
+    .view-panel {
+      position: absolute;
+      inset: 0;
+      display: none;
+      overflow-y: auto;
+      padding: 32px 24px;
+    }
+    .view-panel.active {
+      display: flex;
+      justify-content: center;
+    }
+
+    .content-container {
+      width: 100%;
+      max-width: 1080px;
+    }
+
+    /* ═══════════════ VIEW 1: REQUESTER (业务端) ═══════════════ */
+    .requester-hero {
+      text-align: center;
+      margin-bottom: 28px;
+    }
+    .requester-hero h1 {
+      font-size: 26px;
+      font-weight: 600;
+      letter-spacing: -0.5px;
+      margin-bottom: 8px;
+    }
+    .requester-hero p {
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .ask-box-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      box-shadow: var(--shadow-sm);
+      margin-bottom: 24px;
+      position: relative;
+    }
+
+    .hard-stop-banner {
+      display: none;
+      background: var(--red-bg);
+      border: 1px solid var(--red-border);
+      color: var(--red-text);
+      padding: 16px;
+      border-radius: var(--radius-md);
+      margin-bottom: 18px;
+      animation: fadeIn 0.2s ease-in;
+    }
+    .hard-stop-banner h4 {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .hard-stop-banner p {
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .deflection-box {
+      display: none;
+      background: var(--amber-bg);
+      border: 1px solid var(--amber-border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      margin-bottom: 18px;
+      animation: fadeIn 0.2s ease-in;
+    }
+    .deflection-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--amber-text);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .deflection-item {
+      background: var(--bg-card);
+      border: 1px solid var(--amber-border);
+      border-radius: var(--radius-sm);
+      padding: 12px;
+      margin-bottom: 8px;
+    }
+    .deflection-item h5 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 4px;
+    }
+    .deflection-item p {
+      font-size: 13px;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }
+    .deflection-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 8px;
+    }
+
+    .form-group {
+      margin-bottom: 16px;
+    }
+    .form-label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: var(--text-main);
+    }
+    textarea.ask-input {
+      width: 100%;
+      min-height: 110px;
+      padding: 12px 14px;
+      font-size: 14px;
+      font-family: inherit;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      outline: none;
+      resize: vertical;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    textarea.ask-input:focus {
+      border-color: var(--primary);
+      background: var(--bg-card);
+      box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+    select.input-control, input.input-control {
+      width: 100%;
+      padding: 10px 12px;
+      font-size: 13px;
+      font-family: inherit;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      background: var(--bg-subtle);
+      color: var(--text-main);
+      outline: none;
+    }
+    select.input-control:focus, input.input-control:focus {
+      border-color: var(--primary);
+      background: var(--bg-card);
+    }
+
+    .btn-submit {
+      width: 100%;
+      padding: 12px;
+      background: var(--primary);
+      color: white;
+      border: none;
+      border-radius: var(--radius-md);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background 0.15s ease;
+    }
+    .btn-submit:hover:not(:disabled) {
+      background: var(--primary-hover);
+    }
+    .btn-submit:disabled {
+      background: var(--border-dark);
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
+
+    /* ═══════════════ VIEW 2: LEGAL DESK & INBOX (法务后台) ═══════════════ */
+    .desk-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      margin-bottom: 24px;
+    }
+    .desk-header h2 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+    }
+    .desk-stats {
+      display: flex;
+      gap: 16px;
+    }
+    .stat-badge {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+    }
+    .stat-badge strong {
+      color: var(--text-main);
+      font-size: 14px;
+      margin-left: 4px;
+    }
+
+    .desk-layout {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 20px;
+      height: calc(100vh - 160px);
+    }
+
+    /* Queue Sidebar */
+    .queue-pane {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .queue-filter-bar {
+      padding: 12px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      gap: 6px;
+    }
+    .filter-pill {
+      font-size: 12px;
+      border: none;
+      background: var(--bg-subtle);
+      color: var(--text-muted);
+      padding: 4px 10px;
+      border-radius: 12px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .filter-pill.active {
+      background: var(--primary);
+      color: white;
+      font-weight: 600;
+    }
+    .queue-list {
+      flex: 1;
+      overflow-y: auto;
+      list-style: none;
+    }
+    .queue-item {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border-color);
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .queue-item:hover {
+      background: var(--bg-subtle);
+    }
+    .queue-item.active {
+      background: var(--primary-light);
+      border-left: 3px solid var(--primary);
+    }
+    .queue-item-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 4px;
+    }
+    .requester-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+    .tier-badge {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+    .tier-badge.green { background: var(--green-bg); color: var(--green-text); border: 1px solid var(--green-border); }
+    .tier-badge.amber { background: var(--amber-bg); color: var(--amber-text); border: 1px solid var(--amber-border); }
+    .tier-badge.red { background: var(--red-bg); color: var(--red-text); border: 1px solid var(--red-border); }
+
+    .queue-item-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-main);
+      margin-bottom: 4px;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .queue-item-preview {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    /* Detail Drawer / Work Area */
+    .detail-pane {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      padding: 24px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+    .detail-empty {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--text-subtle);
+      font-size: 14px;
+    }
+
+    .detail-card {
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 18px;
+      background: var(--bg-card);
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-muted);
+    }
+
+    .ai-brief-box {
+      background: #FDFBF7;
+      border: 1px solid #F5EBE1;
+      border-radius: var(--radius-md);
+      padding: 16px;
+    }
+    .brief-section {
+      margin-bottom: 12px;
+    }
+    .brief-section-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--primary);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+    }
+    .brief-text {
+      font-size: 13px;
+      color: var(--text-main);
+      line-height: 1.6;
+    }
+    .pill-rests-on {
+      display: inline-block;
+      background: #EDE9FE;
+      color: #5B21B6;
+      border: 1px solid #DDD6FE;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      margin-right: 4px;
+      margin-top: 4px;
+      font-family: var(--font-mono);
+    }
+
+    .draft-textarea {
+      width: 100%;
+      min-height: 120px;
+      padding: 12px;
+      font-size: 13px;
+      font-family: inherit;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      line-height: 1.5;
+      color: var(--text-main);
+      background: var(--bg-card);
+      margin-bottom: 12px;
+    }
+    .draft-textarea:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+
+    .action-row {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+    }
+    .btn-secondary {
+      padding: 8px 16px;
+      background: var(--bg-subtle);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-sm);
+      color: var(--text-main);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+    .btn-primary {
+      padding: 8px 18px;
+      background: var(--primary);
+      border: none;
+      border-radius: var(--radius-sm);
+      color: white;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .audit-trail {
+      font-size: 11px;
+      color: var(--text-subtle);
+      margin-top: 14px;
+      border-top: 1px dashed var(--border-color);
+      padding-top: 10px;
+      font-family: var(--font-mono);
+    }
+
+    /* ═══════════════ VIEW 3: ADVICE REGISTER (指引库) ═══════════════ */
+    .register-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+    .register-table th {
+      background: var(--bg-subtle);
+      padding: 12px 16px;
+      text-align: left;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-color);
+    }
+    .register-table td {
+      padding: 14px 16px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border-color);
+      vertical-align: top;
+    }
+    .register-table tr:last-child td { border-bottom: none; }
+    .position-quote {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      background: var(--bg-subtle);
+      padding: 6px 10px;
+      border-radius: 4px;
+      border-left: 3px solid var(--primary);
+      margin-top: 6px;
+      color: #44403C;
+    }
+
+    /* Modals & Alerts */
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top Global Header -->
+  <header>
+    <div class="brand">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+      </svg>
+      <span>Ask legal</span>
+      <span class="brand-tag">Legal Artifact 2.0</span>
+    </div>
+
+    <!-- Mode/Role Switcher -->
+    <div class="role-switcher">
+      <button class="role-btn active" data-view="requester" onclick="switchView('requester')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        业务端：发起法律咨询
+      </button>
+      <button class="role-btn" data-view="desk" onclick="switchView('desk')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+        法务端：工单抽屉与 AI 分流
+      </button>
+      <button class="role-btn" data-view="register" onclick="switchView('register')">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        法务指引库 (Advice Register)
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ═══════════════ VIEW 1: REQUESTER VIEW (业务端) ═══════════════ -->
+    <section id="view-requester" class="view-panel active">
+      <div class="content-container" style="max-width: 680px;">
+        <div class="requester-hero">
+          <h1>向公司法务团队提问</h1>
+          <p>提交合同初审、知识产权、供应商合规或商业授权咨询。AI 会实时匹配已批准指引。</p>
+        </div>
+
+        <div class="ask-box-card">
+          <!-- Hard Stop Emergency Banner (动态阻断提示) -->
+          <div id="hard-stop-alert" class="hard-stop-banner">
+            <h4>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              触发重大合规/诉讼强阻断 (Hard Stop)
+            </h4>
+            <p>系统检测到你的诉求包含<strong>传票、法院起诉、停牌函 (Cease & Desist) 或法定保留 (Legal Hold)</strong> 相关重大风险词汇。此类高危事项<strong>严禁走常规日常咨询工单</strong>！请立刻通过紧急电话联系总法律顾问（总机分机：8888）或直接邮件发送至 <code style="font-family:var(--font-mono);font-weight:600;">gc-emergency@company.com</code>。</p>
+          </div>
+
+          <!-- Self-serve Deflection (实时智能指引与拦截) -->
+          <div id="deflection-alert" class="deflection-box">
+            <div class="deflection-header">
+              <span>💡 发现匹配的法务常备指引（无需等待即可解决）</span>
+            </div>
+            <div id="deflection-content"></div>
+          </div>
+
+          <!-- Main Input Form -->
+          <form id="requester-form" onsubmit="handleRequesterSubmit(event)">
+            <div class="form-group">
+              <label class="form-label" for="ask-text">你的具体问题或法律诉求</label>
+              <textarea 
+                id="ask-text" 
+                class="ask-input" 
+                placeholder="例如：我能在给新客户的宣讲 PPT 里放上个月刚签约客户的 Logo 吗？或者：工程师想在内部构建工具里引用 AGPL 开源库，可行吗？"
+                oninput="handleInputLiveCheck(this.value)"
+                required
+              ></textarea>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label" for="ask-team">所属业务部门</label>
+                <select id="ask-team" class="input-control" required>
+                  <option value="Sales">销售 / 商务拓展 (Sales/BD)</option>
+                  <option value="Marketing">市场与公关 (Marketing/PR)</option>
+                  <option value="Engineering">技术与研发 (Engineering/R&D)</option>
+                  <option value="Product">产品团队 (Product)</option>
+                  <option value="HR">人力资源 (HR)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="ask-urgency">紧急程度 (SLA)</label>
+                <select id="ask-urgency" class="input-control">
+                  <option value="standard">标准处理 (48 小时内答复)</option>
+                  <option value="urgent">紧急交易 (24 小时内答复)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="ask-facts">关键事实细节补充（如相对方名称、合同签署时间）</label>
+              <input type="text" id="ask-facts" class="input-control" placeholder="如：对方是 Acme Corp，上月刚签三年主服务协议">
+            </div>
+
+            <button type="submit" id="btn-submit-ticket" class="btn-submit">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              提交工单给法务团队
+            </button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ VIEW 2: LEGAL DESK & INBOX (法务端工作台) ═══════════════ -->
+    <section id="view-desk" class="view-panel">
+      <div class="content-container">
+        <div class="desk-header">
+          <div>
+            <h2>法务团队收件箱与 AI 分流台</h2>
+            <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">实时监控业务咨询、查看 Claude 自动生成的初审简报与拟定草稿</p>
+          </div>
+          <div class="desk-stats">
+            <div class="stat-badge">待处理工单: <strong id="stat-pending">2</strong></div>
+            <div class="stat-badge">AI 初审覆盖率: <strong>100%</strong></div>
+            <div class="stat-badge">今日自助拦截: <strong>14 次</strong></div>
+          </div>
+        </div>
+
+        <div class="desk-layout">
+          <!-- Queue Column -->
+          <div class="queue-pane">
+            <div class="queue-filter-bar">
+              <button class="filter-pill active" onclick="filterQueue('all', this)">全部工单</button>
+              <button class="filter-pill" onclick="filterQueue('open', this)">待审核</button>
+              <button class="filter-pill" onclick="filterQueue('answered', this)">已结案</button>
+            </div>
+            <ul id="queue-list" class="queue-list">
+              <!-- Dynamically populated -->
+            </ul>
+          </div>
+
+          <!-- Ticket Detail & Triage Drawer -->
+          <div id="detail-pane" class="detail-pane">
+            <div class="detail-empty">👈 请在左侧列表中点击选择一项工单进行审查</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══════════════ VIEW 3: ADVICE REGISTER (法务指引库) ═══════════════ -->
+    <section id="view-register" class="view-panel">
+      <div class="content-container">
+        <div class="desk-header">
+          <div>
+            <h2>企业常备法务指引库 (Standing Guidance Register)</h2>
+            <p style="color:var(--text-muted);font-size:13px;margin-top:2px;">Claude AI 生成初审简报的唯一权威依据，每一条立场均逐字锁定</p>
+          </div>
+          <button class="btn-primary" onclick="alert('支持拖拽公司制度/Playbook PDF文件直接解析扩充指引库。')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            导入制度文件扩充指引
+          </button>
+        </div>
+
+        <table class="register-table">
+          <thead>
+            <tr>
+              <th style="width: 20%;">规范议题 (Topic)</th>
+              <th style="width: 25%;">业务常见诉求 (Question)</th>
+              <th style="width: 35%;">法务标准立场原文 (Position Quote) 与通俗指引</th>
+              <th style="width: 10%;">适用团队</th>
+              <th style="width: 10%;">状态</th>
+            </tr>
+          </thead>
+          <tbody id="register-tbody">
+            <!-- Dynamically populated from REGISTER_DATA -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ═══════════════ JAVASCRIPT STATE & LOGIC ═══════════════ -->
+  <script>
+    // 1. 核心法务指引数据库 (权威法务立场)
+    const REGISTER_DATA = [
+      {
+        id: "reg-logo-use",
+        topic: "客户商标与品牌使用 (Customer Logos)",
+        question: "能否在销售演示或宣传 PPT 中使用客户 Logo？",
+        position: "Customer logos may only be used with express prior written permission. Verbal OK, marketing discussions, or having executed a sales contract does not constitute consent unless a specific publicity clause exists.",
+        guidance: "必须具备签署合同中的宣传授权条款或对方书面确认函。仅完成签约不可擅自对外使用对方 Logo。",
+        audience: ["Sales", "Marketing"],
+        status: "Approved",
+        ref: "商业合同 Playbook §4.2"
+      },
+      {
+        id: "reg-agpl-oss",
+        topic: "开源软件许可限制 (AGPL / SSPL Components)",
+        question: "能否在内部自建工具或服务中引入 AGPL/SSPL 开源库？",
+        position: "Internal tools and customer-facing products may not incorporate components under AGPL or SSPL without prior written approval from Product Counsel.",
+        guidance: "即便是纯内部使用，AGPL 库由于其极强的传染性与衍生风险，严禁私自引入，必须先报法务审批决定。",
+        audience: ["Engineering", "Product"],
+        status: "Approved",
+        ref: "知识产权与开源合规准则 §3.1"
+      },
+      {
+        id: "reg-liability-cap",
+        topic: "责任限制上限 (Liability Cap)",
+        question: "客户要求责任上限为无限制或超过合同总额 3 倍，可否同意？",
+        position: "Standard liability cap is strictly 1x annual contract value. Any cap exceeding 2x requires CFO & General Counsel joint written sign-off.",
+        guidance: "我方标准底线为 1 倍年合同额。客户要求超过 2 倍必须联合法务总监及财务负责人审批，严禁单方承诺无限制责任。",
+        audience: ["Sales"],
+        status: "Approved",
+        ref: "标准商务谈判底线手册 §8.1"
+      }
+    ];
+
+    // 2. 模拟队列初始数据 (Tickets Queue)
+    let QUEUE_DATA = [
+      {
+        id: "req-001",
+        title: "能否在新客户宣讲 PPT 中加入上月刚签约客户的 Logo？",
+        text: "下周三有一个重点大客户的商务拜访，我想在 PPT 的『成功客户案例』那一页放上个月刚签单的某银行 Logo。对方上月刚打款，关系很好，能放吗？",
+        team: "Sales",
+        requester: "张明 (销售总监)",
+        createdAt: "2026-10-29 08:15",
+        urgency: "standard",
+        status: "open",
+        tier: "amber",
+        facts: "对方为某商业银行，刚签署主服务合同，未单独签宣传协议",
+        aiBrief: {
+          recommendation: "暂不可直接使用 (GUIDANCE: CONDITIONAL)",
+          restsOn: ["reg-logo-use"],
+          askSummary: "销售询问能否在客户宣讲 PPT 中展示上月已签约客户的银行 Logo。",
+          policyBasis: "依据法务指引库【客户商标与品牌使用】：使用客户 Logo 必须具有书面明确授权（合同中带 publicity 宣传条款或单独授权函），口头同意或单纯签约打款并不等同于授权。",
+          missingFacts: [
+            "尚未核实已签合同中是否包含宣传（Publicity）授权条款；",
+            "是否已向对方商务接口人获取正式邮件/书面同意。"
+          ],
+          draftReply: "张明你好：\n\n目前暂不能直接在 PPT 中使用该客户 Logo。\n\n根据公司法务合规要求，对外展示客户品牌必须满足以下条件之一：\n1. 已签署的合同正文中包含明确的『宣传授权（Publicity Clause）』条款；\n2. 获得客户授权人的书面确认邮件。\n\n【下一步行动】：请将已签署的合同文本发送法务核实是否有宣传条款；或由你向客户发出书面确认函，待法务确认后方可加入 PPT。"
+        },
+        auditLogs: [
+          { at: "08:15:20", by: "System", what: "业务端提交工单" },
+          { at: "08:15:23", by: "Claude Cowork", what: "自动运行 AI 初审分流，锚定依据 reg-logo-use，生成初审 Brief 与回复草稿" }
+        ]
+      },
+      {
+        id: "req-002",
+        title: "工程师想在一个内部运维工具里引用 AGPL 库，是否可行？",
+        text: "我们的基础设施团队想在一个只在公司内网运行的自动化构建脚本里，引用一个 AGPL-3.0 协议的任务队列库。这套工具完全不对客户分发，也不对外开放网络调用。请问可以直接用吗？",
+        team: "Engineering",
+        requester: "李雷 (架构师)",
+        createdAt: "2026-10-29 07:40",
+        urgency: "standard",
+        status: "open",
+        tier: "amber",
+        facts: "涉及 AGPL-3.0 库，纯内网运维工具，不对外发布",
+        aiBrief: {
+          recommendation: "需法务特批 (GUIDANCE: APPROVAL REQUIRED)",
+          restsOn: ["reg-agpl-oss"],
+          askSummary: "研发询问纯内部工具能否引入 AGPL-3.0 开源库。",
+          policyBasis: "依据【开源软件许可限制 §3.1】：由于 AGPL 极高传染性，即使是仅内部使用的系统，未经产品法务书面审核同意，亦禁止直接引入。",
+          missingFacts: [
+            "需明确该库的具体名称、官方仓库地址及版本号；",
+            "需确认未来是否有任何可能作为商业服务暴露接口给第三方。"
+          ],
+          draftReply: "李雷你好：\n\n暂不能直接引入。依据公司开源合规规范，AGPL/SSPL 等强传染性协议即使宣称仅内部使用，也必须经过产品法务书面核准。\n\n请向法务补充提供：该开源库名称、版本，以及该工具完整的架构调用链，法务将在 24 小时内完成评估。"
+        },
+        auditLogs: [
+          { at: "07:40:11", by: "System", what: "业务端提交工单" },
+          { at: "07:40:15", by: "Claude Cowork", what: "AI 初审完成，标记 Amber 风险，生成答复草稿" }
+        ]
+      }
+    ];
+
+    let currentSelectedId = null;
+
+    // 3. 视图切换
+    function switchView(viewName) {
+      document.querySelectorAll('.role-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.view === viewName);
+      });
+      document.querySelectorAll('.view-panel').forEach(panel => {
+        panel.classList.toggle('active', panel.id === `view-${viewName}`);
+      });
+      if (viewName === 'desk') {
+        renderQueue();
+        if (QUEUE_DATA.length > 0 && !currentSelectedId) {
+          selectTicket(QUEUE_DATA[0].id);
+        }
+      }
+    }
+
+    // 4. 业务端：实时输入检测（Hard Stop 阻断与 Deflection 智能拦截）
+    function handleInputLiveCheck(val) {
+      const hardStopBox = document.getElementById('hard-stop-alert');
+      const deflectionBox = document.getElementById('deflection-alert');
+      const deflectionContent = document.getElementById('deflection-content');
+      const submitBtn = document.getElementById('btn-submit-ticket');
+
+      const hardStopKeywords = ["传票", "法院", "起诉", "诉讼", "被告", "原告", "subpoena", "lawsuit", "cease and desist", "legal hold"];
+      const lower = val.toLowerCase();
+
+      // A. 检测硬阻断 (Hard Stop)
+      const triggeredHardStop = hardStopKeywords.some(kw => lower.includes(kw));
+      if (triggeredHardStop) {
+        hardStopBox.style.display = 'block';
+        deflectionBox.style.display = 'none';
+        submitBtn.disabled = true;
+        return;
+      } else {
+        hardStopBox.style.display = 'none';
+        submitBtn.disabled = false;
+      }
+
+      // B. 智能检索已核准法务指引 (Deflection)
+      let matches = [];
+      if (val.length >= 3) {
+        if (lower.includes('logo') || lower.includes('商标') || lower.includes('标志') || lower.includes('宣传')) {
+          matches.push(REGISTER_DATA[0]);
+        }
+        if (lower.includes('agpl') || lower.includes('开源') || lower.includes('sspl') || lower.includes('库')) {
+          matches.push(REGISTER_DATA[1]);
+        }
+        if (lower.includes('责任') || lower.includes('上限') || lower.includes('赔偿') || lower.includes('违约')) {
+          matches.push(REGISTER_DATA[2]);
+        }
+      }
+
+      if (matches.length > 0) {
+        deflectionBox.style.display = 'block';
+        deflectionContent.innerHTML = matches.map(m => `
+          <div class="deflection-item">
+            <h5>${m.topic}</h5>
+            <p><strong>已核准指引：</strong>${m.guidance}</p>
+            <div class="deflection-actions">
+              <button type="button" class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="resolveBySelfServe('${m.topic}')">✅ 这已解决我的疑惑 (无需提交)</button>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        deflectionBox.style.display = 'none';
+      }
+    }
+
+    function resolveBySelfServe(topic) {
+      alert(`已记录：业务方根据【${topic}】自助解决问题，无需法务介入！`);
+      document.getElementById('ask-text').value = '';
+      document.getElementById('deflection-alert').style.display = 'none';
+    }
+
+    // 5. 业务端：工单提交
+    function handleRequesterSubmit(e) {
+      e.preventDefault();
+      const text = document.getElementById('ask-text').value.trim();
+      const team = document.getElementById('ask-team').value;
+      const urgency = document.getElementById('ask-urgency').value;
+      const facts = document.getElementById('ask-facts').value.trim();
+
+      const newId = `req-${String(QUEUE_DATA.length + 1).padStart(3, '0')}`;
+      const newTicket = {
+        id: newId,
+        title: text.length > 30 ? text.substring(0, 30) + '...' : text,
+        text: text,
+        team: team,
+        requester: "当前业务发起人",
+        createdAt: "刚刚 (2026-10-29)",
+        urgency: urgency,
+        status: "open",
+        tier: urgency === 'urgent' ? 'red' : 'amber',
+        facts: facts || "无额外事实提供",
+        aiBrief: {
+          recommendation: "AI 已初审并匹配指引",
+          restsOn: ["reg-logo-use"],
+          askSummary: text,
+          policyBasis: "已对照企业法务库完成规则映射。",
+          missingFacts: ["建议法务核验原始合同细节。"],
+          draftReply: `您好，法务已收到关于【${text.substring(0, 15)}...】的咨询。经初步评估，请按照公司标准合规流程处理，如有特别约定请补充合同附件。`
+        },
+        auditLogs: [
+          { at: "刚刚", by: "Requester", what: "业务端提交工单" },
+          { at: "刚刚", by: "Claude", what: "自动运行 AI 初审分流生成 Brief" }
+        ]
+      };
+
+      QUEUE_DATA.unshift(newTicket);
+      alert('工单已成功提交至法务工作台！Claude 正在后台运行初审简报。');
+      document.getElementById('requester-form').reset();
+      document.getElementById('deflection-alert').style.display = 'none';
+      switchView('desk');
+    }
+
+    // 6. 法务端：渲染队列
+    function renderQueue(filter = 'all') {
+      const listEl = document.getElementById('queue-list');
+      const filtered = QUEUE_DATA.filter(item => {
+        if (filter === 'open') return item.status === 'open';
+        if (filter === 'answered') return item.status === 'answered';
+        return true;
+      });
+
+      document.getElementById('stat-pending').innerText = QUEUE_DATA.filter(q => q.status === 'open').length;
+
+      listEl.innerHTML = filtered.map(item => `
+        <li class="queue-item ${item.id === currentSelectedId ? 'active' : ''}" onclick="selectTicket('${item.id}')">
+          <div class="queue-item-meta">
+            <span class="requester-name">${item.requester} · ${item.team}</span>
+            <span class="tier-badge ${item.tier}">${item.status === 'answered' ? '已办结' : item.tier}</span>
+          </div>
+          <div class="queue-item-title">${item.title}</div>
+          <div class="queue-item-preview">${item.text}</div>
+        </li>
+      `).join('');
+    }
+
+    function filterQueue(filter, btn) {
+      document.querySelectorAll('.filter-pill').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderQueue(filter);
+    }
+
+    // 7. 法务端：选择并展示工单详情
+    function selectTicket(id) {
+      currentSelectedId = id;
+      renderQueue();
+      const ticket = QUEUE_DATA.find(q => q.id === id);
+      if (!ticket) return;
+
+      const pane = document.getElementById('detail-pane');
+      pane.innerHTML = `
+        <!-- Ticket Header -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <span class="tier-badge ${ticket.tier}" style="margin-bottom:6px;display:inline-block;">${ticket.tier.toUpperCase()} 风险</span>
+            <h3 style="font-size:18px;font-weight:700;">${ticket.title}</h3>
+            <p style="font-size:12px;color:var(--text-muted);margin-top:2px;">来自：${ticket.requester} (${ticket.team}) · 提交于 ${ticket.createdAt}</p>
+          </div>
+          <span style="font-size:12px;padding:4px 10px;border-radius:12px;background:var(--bg-subtle);font-weight:600;">
+            状态：${ticket.status === 'answered' ? '✅ 已由律师发送' : '⏳ 待审核处理'}
+          </span>
+        </div>
+
+        <!-- Section 1: 业务方原始诉求快照 -->
+        <div class="detail-card">
+          <div class="card-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            业务方原始诉求与事实
+          </div>
+          <p style="font-size:13px;line-height:1.6;color:var(--text-main);">${ticket.text}</p>
+          <div style="margin-top:10px;font-size:12px;color:var(--text-muted);background:var(--bg-subtle);padding:8px 12px;border-radius:var(--radius-sm);">
+            <strong>提供的事实证据：</strong> ${ticket.facts}
+          </div>
+        </div>
+
+        <!-- Section 2: Claude AI 自动初审简报 (AI Brief) -->
+        <div class="detail-card ai-brief-box">
+          <div class="card-title" style="color:var(--primary);">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+            Claude AI 自动初审分析报告 (AI Brief)
+          </div>
+
+          <div class="brief-section">
+            <div class="brief-section-title">初审结论建议</div>
+            <div class="brief-text"><strong>${ticket.aiBrief.recommendation}</strong></div>
+          </div>
+
+          <div class="brief-section">
+            <div class="brief-section-title">法规/指引依据 (restsOn)</div>
+            <div class="brief-text">
+              ${ticket.aiBrief.restsOn.map(r => `<span class="pill-rests-on">📌 ${r}</span>`).join('')}
+              <div style="margin-top:6px;font-size:12px;color:var(--text-muted);">${ticket.aiBrief.policyBasis}</div>
+            </div>
+          </div>
+
+          <div class="brief-section">
+            <div class="brief-section-title">关键缺失信息排查 (What is Missing)</div>
+            <ul style="font-size:12px;color:#991B1B;padding-left:18px;margin-top:4px;">
+              ${ticket.aiBrief.missingFacts.map(f => `<li>${f}</li>`).join('')}
+            </ul>
+          </div>
+        </div>
+
+        <!-- Section 3: 律师终审与答复草稿编辑区 -->
+        <div class="detail-card">
+          <div class="card-title">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            法务律师签署与修改（Lawyer Gate）
+          </div>
+          <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;">以下是 Claude 基于指引拟订的回复草稿，律师可直接编辑修改并一键正式发送：</p>
+          <textarea id="reply-draft-input" class="draft-textarea">${ticket.aiBrief.draftReply}</textarea>
+
+          <div class="action-row">
+            <button class="btn-secondary" onclick="alert('已向业务方发送补正通知，要求补充合同文本。')">⚠️ 要求业务补充事实</button>
+            <button class="btn-primary" onclick="approveAndSend('${ticket.id}')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+              核准并以法务名义发送答复
+            </button>
+          </div>
+
+          <div class="audit-trail">
+            <strong>合规留痕审计链条 (Audit Trail)：</strong><br>
+            ${ticket.auditLogs.map(l => `[${l.at}] ${l.by} -> ${l.what}`).join('<br>')}
+          </div>
+        </div>
+      `;
+    }
+
+    // 8. 律师核准并发送
+    function approveAndSend(id) {
+      const ticket = QUEUE_DATA.find(q => q.id === id);
+      if (!ticket) return;
+
+      const finalReply = document.getElementById('reply-draft-input').value;
+      ticket.status = 'answered';
+      ticket.aiBrief.draftReply = finalReply;
+      ticket.auditLogs.push({
+        at: new Date().toLocaleTimeString(),
+        by: "法务执业律师 (Lawyer Approver)",
+        what: "核准 AI 草稿并签发最终法律答复（工单办结归档）"
+      });
+
+      alert(`✅ 已正式发送法律答复给业务发起人 [${ticket.requester}]！该操作已被记录在企业审计日志中。`);
+      selectTicket(id);
+    }
+
+    // 9. 渲染指引库表格
+    function renderRegister() {
+      const tbody = document.getElementById('register-tbody');
+      tbody.innerHTML = REGISTER_DATA.map(reg => `
+        <tr>
+          <td>
+            <strong>${reg.topic}</strong><br>
+            <span style="font-size:11px;color:var(--text-muted);">${reg.ref}</span>
+          </td>
+          <td>${reg.question}</td>
+          <td>
+            <div style="color:var(--text-main);">${reg.guidance}</div>
+            <div class="position-quote">"${reg.position}"</div>
+          </td>
+          <td>${reg.audience.map(a => `<span class="pill-rests-on" style="background:var(--bg-subtle);color:var(--text-muted);border-color:var(--border-color);">${a}</span>`).join('')}</td>
+          <td><span class="tier-badge green">${reg.status}</span></td>
+        </tr>
+      `).join('');
+    }
+
+    // 初始化运行
+    window.addEventListener('DOMContentLoaded', () => {
+      renderRegister();
+      renderQueue();
+    });
+  </script>
+</body>
+</html>
